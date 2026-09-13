@@ -3,6 +3,7 @@
 
 import pytest
 
+import cinebox as cine
 from cinebox.favorites import FavoritesManager
 from cinebox.history import HistoryManager
 from cinebox.models import MediaType, SearchResult
@@ -92,3 +93,53 @@ class TestFavorites:
 
     def test_to_search_result_bad_entry(self, favorites):
         assert favorites.to_search_result({"garbage": True}) is None
+
+
+class TestHistoryLabels:
+    def _app(self):
+        app = cine.CineApp()
+        app._interactive = False
+        return app
+
+    def test_movie_entry_with_stray_episode_has_no_season_label(self):
+        entry = {"title": "Inception", "media_type": "movie", "season": 1, "episode": 4}
+        assert self._app()._history_label(entry) == "Inception"
+
+    def test_tv_entry_shows_season_episode_label(self):
+        entry = {"title": "GoT", "media_type": "tv", "season": 1, "episode": 2}
+        assert self._app()._history_label(entry) == "GoT — S01E02"
+
+    def test_tv_entry_without_episode_number_has_no_label(self):
+        entry = {"title": "GoT", "media_type": "tv", "season": 1}
+        assert self._app()._history_label(entry) == "GoT"
+
+    def test_movie_chosen_never_becomes_tv_history(self):
+        app = self._app()
+        captured = {}
+        app.history = type("StubHistory", (), {"add": lambda self, entry: captured.update(entry)})()
+        chosen = SearchResult(imdb_id="tt1375666", title="Inception", media_type=MediaType.MOVIE)
+        stream = type("StubStream", (), {"title": "Inception"})()
+        app._record_history(chosen, 1, 2, stream)
+        assert captured["media_type"] == "movie"
+        assert captured["season"] is None
+        assert captured["episode"] is None
+
+    def test_tv_chosen_keeps_episode_data(self):
+        app = self._app()
+        captured = {}
+        app.history = type("StubHistory", (), {"add": lambda self, entry: captured.update(entry)})()
+        chosen = SearchResult(imdb_id="tt1234567", title="GoT", media_type=MediaType.TV)
+        stream = type("StubStream", (), {"title": "GoT"})()
+        app._record_history(chosen, 1, 2, stream)
+        assert captured["media_type"] == "tv"
+        assert captured["season"] == 1
+        assert captured["episode"] == 2
+
+    def test_record_history_keeps_movie_when_no_episode_args(self):
+        app = self._app()
+        captured = {}
+        app.history = type("StubHistory", (), {"add": lambda self, entry: captured.update(entry)})()
+        chosen = SearchResult(imdb_id="tt1375666", title="Inception", media_type=MediaType.MOVIE)
+        stream = type("StubStream", (), {"title": "Inception"})()
+        app._record_history(chosen, None, None, stream)
+        assert captured["media_type"] == "movie"

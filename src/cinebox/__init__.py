@@ -19,9 +19,9 @@ from .favorites import FavoritesManager
 from .history import HistoryManager
 from .models import MediaType, SearchResult, StreamInfo
 from .player import play, player_exists
-from .providers import build_registry
+from .providers import ResolutionError, build_registry
 from .providers.imdb_su import ImdbSuProvider, _discover_player_host
-from .search import search as do_search
+from .search import search_all
 from .subtitles import download_subtitle, fetch_subsource, fetch_yify, pick_track
 from .ui import UIManager
 from .ui.art import get_goodbye_renderable
@@ -101,7 +101,9 @@ class CineApp:
     def run_search(self, query: str, media_type: MediaType | None = None) -> None:
         """Search, browse results, then route into the play/download flow."""
         try:
-            results = self._load(f"Searching '{query}'…", do_search, query, media_type)
+            results = self._load(
+                f"Searching '{query}'…", search_all, query, media_type, self.registry
+            )
         except (KeyboardInterrupt, EOFError):
             return
         if not results:
@@ -169,7 +171,7 @@ class CineApp:
                 None,
             )
         except Exception as e:  # noqa: BLE001 - user-facing
-            self._message("No stream", f"Could not resolve a stream: {e}", "error")
+            self._resolution_failure(e, "No stream")
             return True
         action = self._quality_and_act(stream, chosen, None, None, intent)
         if not self._interactive or action != "watch":
@@ -275,7 +277,7 @@ class CineApp:
                     episodes[idx],
                 )
             except Exception as e:  # noqa: BLE001 - user-facing
-                self._message("No stream", f"Could not resolve episode: {e}", "error")
+                self._resolution_failure(e, "No stream")
                 return
             action = self._quality_and_act(stream, chosen, season, episodes[idx], "play")
             if not self._interactive or action != "watch":
@@ -393,7 +395,7 @@ class CineApp:
                 self.registry.resolve, chosen.imdb_id, mtype, season, episode,
             )
         except Exception as e:  # noqa: BLE001 - user-facing
-            self._message("No stream", str(e), "error")
+            self._resolution_failure(e, "No stream")
             return
         out = get("download", "tv_dir" if season is not None else "movies_dir", "~/Movies")
         filename = episode_filename(chosen.title, season, episode) if season is not None else None
@@ -418,8 +420,8 @@ class CineApp:
                     self.registry.resolve, chosen.imdb_id, MediaType.TV, season, ep,
                 )
             except Exception as e:  # noqa: BLE001 - user-facing
-                self._message(
-                    "No stream", f"S{season:02d}E{ep:02d}: {e}", "error"
+                self._resolution_failure(
+                    e, f"No stream S{season:02d}E{ep:02d}"
                 )
                 continue
             if stream.quality_choices:
@@ -539,7 +541,7 @@ class CineApp:
         base = entry.get("title", entry.get("imdb_id", "?"))
         if entry.get("year"):
             base += f" ({entry['year']})"
-        if entry.get("season") and entry.get("episode"):
+        if entry.get("media_type") == "tv" and entry.get("season") and entry.get("episode"):
             base += f" — S{entry['season']:02d}E{entry['episode']:02d}"
         return base
 
@@ -561,6 +563,15 @@ class CineApp:
         else:
             icon = {"error": "[ERROR]", "success": "[OK]  ", "info": "[INFO]"}.get(kind, "[INFO]")
             click.echo(f"{icon} {title}: {body}")
+
+    def _resolution_failure(self, e: Exception, fallback: str) -> None:
+        """Report a failed provider chain: per-provider panel or plain line."""
+        if not self._interactive:
+            click.echo(f"[ERROR] {fallback}: {e}")
+        elif isinstance(e, ResolutionError):
+            self.ui.render_error_panel(fallback, e.errors)
+        else:
+            self._message(fallback, str(e), "error")
 
     def _pick(self, items: list[str], title: str) -> str | None:
         if self._interactive:
@@ -586,6 +597,7 @@ class CineApp:
                 return items[idx]
 
     def _record_history(self, chosen: SearchResult, season, episode, stream: StreamInfo) -> None:
+        is_tv = chosen.media_type is MediaType.TV
         self.history.add({
             "imdb_id": chosen.imdb_id,
             "title": stream.title or chosen.title,
@@ -593,8 +605,8 @@ class CineApp:
             "media_type": chosen.media_type.value,
             "image_url": chosen.image_url,
             "cast": chosen.cast,
-            "season": season,
-            "episode": episode,
+            "season": season if is_tv else None,
+            "episode": episode if is_tv else None,
         })
 
     def _entry_to_result(self, entry: dict) -> SearchResult | None:
@@ -765,7 +777,7 @@ def download_cmd(query: str, quality: str | None, media_type: str) -> None:
     quality = quality or get("download", "quality", "1080p")
     try:
         results = app._load(
-            f"Searching '{query}'…", do_search, query, _parse_media_type(media_type)
+            f"Searching '{query}'…", search_all, query, _parse_media_type(media_type), app.registry
         )
     except Exception as e:  # noqa: BLE001 - user-facing
         click.echo(f"Error: {e}", err=True)

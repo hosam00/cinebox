@@ -129,6 +129,7 @@ def _parse_quality_variants(master_url: str, host: str) -> list[dict]:
 
 class ImdbSuProvider(BaseProvider):
     name = "imdb_su"
+    priority = 10
 
     def resolve(
         self,

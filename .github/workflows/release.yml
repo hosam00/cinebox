@@ -12,7 +12,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cinebox/
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +26,9 @@ jobs:
       - name: Build sdist + wheel
         run: uv build
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI (tagged releases only)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          verify-metadata: true

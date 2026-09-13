@@ -6,10 +6,14 @@ No API key required. Returns IMDb IDs directly.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from .models import MediaType, SearchResult
 from .utils import Log, SearchError, new_http_client, retry
+
+if TYPE_CHECKING:
+    from .providers import ProviderRegistry
 
 SUGGESTION_BASE = "https://v3.sg.media-imdb.com/suggestion"
 
@@ -63,3 +67,26 @@ def search_movies(query: str) -> list[SearchResult]:
 
 def search_tv(query: str) -> list[SearchResult]:
     return search(query, MediaType.TV)
+
+
+def search_all(
+    query: str,
+    media_type: MediaType | None = None,
+    registry: ProviderRegistry | None = None,
+) -> list[SearchResult]:
+    """Search IMDb suggestions, then any keyword-capable providers.
+
+    Keyword results are appended after IMDb matches (deduplicated by
+    ``imdb_id``) when a registry is supplied. A ``None`` registry keeps
+    this a pure IMDb search for callers that do not need keyword sources.
+    """
+    results = search(query, media_type)
+    if registry is None:
+        return results
+    seen = {r.imdb_id for r in results}
+    for result in registry.search(query, media_type):
+        if result.imdb_id in seen:
+            continue
+        seen.add(result.imdb_id)
+        results.append(result)
+    return results

@@ -23,6 +23,7 @@ class MultiEmbedError(ProviderError):
 
 class MultiEmbedProvider(BaseProvider):
     name = "multiembed"
+    priority = 30
 
     @property
     def _supported(self) -> bool:

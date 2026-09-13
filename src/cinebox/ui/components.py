@@ -180,6 +180,43 @@ class UIManager:
                     if key is not None:
                         break
 
+    def render_error_panel(
+        self,
+        title: str,
+        provider_errors: list[str],
+        hint: str = "Try again later or pick a different title.",
+    ) -> None:
+        """Centered red panel listing one failed provider per line."""
+        content = Text()
+        for err in provider_errors:
+            content.append("✗ ", style=COLOR_ERROR)
+            content.append(f"{err}\n", style=COLOR_PRIMARY_TEXT)
+        content.append(f"— {hint}", style="dim")
+        panel = Panel(
+            Align.center(content, vertical="middle"),
+            title=Text(f"✗ {title}", style=f"bold {COLOR_ERROR}"),
+            subtitle=Text("press any key", style="dim"),
+            box=HEAVY,
+            border_style=COLOR_ERROR,
+            padding=(2, 4),
+        )
+        self.clear()
+        with RawTerminal():
+            with Live(
+                Align.center(panel, vertical="middle", height=self.console.height),
+                console=self.console,
+                auto_refresh=False,
+                screen=True,
+            ) as live:
+                live.update(
+                    Align.center(panel, vertical="middle", height=self.console.height),
+                    refresh=True,
+                )
+                while True:
+                    key = get_key()
+                    if key is not None:
+                        break
+
     def now_playing(self, title: str, detail: str, quality: str) -> None:
         """Draw a 'Now Playing' panel while the player runs in its own window."""
         content = Text(justify="center")

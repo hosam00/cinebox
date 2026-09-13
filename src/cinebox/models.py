@@ -15,7 +15,7 @@ class MediaType(StrEnum):
 class SearchResult(BaseModel):
     """A single result from the IMDb suggestion endpoint."""
 
-    imdb_id: str = Field(pattern=r"^tt\d+$")
+    imdb_id: str = Field(pattern=r"^tt\d+$|^[a-z0-9]+:[a-zA-Z0-9_-]+$")
     title: str
     year: int | None = None
     media_type: MediaType

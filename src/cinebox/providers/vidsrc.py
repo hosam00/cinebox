@@ -85,6 +85,7 @@ def _meta_api(
 
 class VidSrcProvider(BaseProvider):
     name = "vidsrc"
+    priority = 20
 
     def resolve(
         self,
