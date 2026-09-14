@@ -1,9 +1,11 @@
 """Render movie posters as ANSI truecolor art in the terminal.
 
 The poster (if any) is downloaded over HTTP, resized to fit the panel
-height while preserving aspect ratio, and each 2x2 pixel block is
-collapsed to a single Unicode quadrant character with fg/bg truecolor
-escape codes. Results are cached in-memory per URL.
+height while preserving aspect ratio, and rendered with the upper
+half-block character (``▀``): each cell shows one source pixel on top
+(foreground truecolor) and the next source row below it (background).
+Two distinct pixels per character yields the sharpest block art a
+terminal can draw. Results are cached in-memory per URL.
 """
 
 from __future__ import annotations
@@ -14,9 +16,35 @@ from io import BytesIO
 import numpy as np
 from rich.text import Text
 
+from ..config import get
 from ..utils import new_http_client
 
-QUADRANTS = [" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"]
+
+def _poster_pixel_dims(
+    source_w: int,
+    source_h: int,
+    max_height: int,
+    scale: float,
+    max_chars: int | None = None,
+) -> tuple[int, int]:
+    """Compute the (width, height) pixel grid for a poster.
+
+    ``scale`` is the terminal cell aspect compensation (width factor,
+    default 1.0 assumes a ~2:1 cell, which half-block pixels match).
+    ``max_chars`` (if set) limits the rendered character width so the
+    poster never overflows its panel; height shrinks to keep aspect.
+    """
+    if source_w <= 0 or source_h <= 0:
+        return (0, 0)
+    height = max(2, max_height * 2)
+    width = int((source_w / source_h) * height * scale)
+    if max_chars is not None and max_chars >= 1:
+        if width > max_chars:
+            height = max(2, int(height * max_chars / width))
+            width = int((source_w / source_h) * height * scale)
+    if height % 2 != 0:
+        height -= 1
+    return max(1, width), max(2, height)
 
 
 def _hex(rgb: np.ndarray) -> str:
@@ -25,75 +53,54 @@ def _hex(rgb: np.ndarray) -> str:
 
 
 def pixel_grid_to_ansi(arr: np.ndarray) -> list[str]:
-    """Convert a 2D RGB pixel array (even dims preferred) to ANSI block-art lines.
+    """Convert a 2D RGB pixel array to ANSI half-block art lines.
 
-    Each output line corresponds to two source rows; each character to a
-    2x2 quadrant block. Pure function (testable without an image).
+    Each output line corresponds to two source rows; each character is
+    the upper half-block ``▀`` with the top pixel as foreground and the
+    bottom pixel as background. Pure function (testable without an image).
     """
     height, width = arr.shape[:2]
     output_lines: list[str] = []
-    for y in range(0, height, 2):
+    for y in range(0, height - 1, 2):
         line_parts: list[str] = []
-        for x in range(0, width, 2):
-            p0 = arr[y, x]
-            p1 = arr[y, x + 1] if x + 1 < width else p0
-            p2 = arr[y + 1, x] if y + 1 < height else p0
-            p3 = arr[y + 1, x + 1] if (y + 1 < height and x + 1 < width) else p0
-
-            def lum(p) -> float:
-                return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
-
-            pix = [p0, p1, p2, p3]
-            lums = [lum(p) for p in pix]
-            avg = sum(lums) / 4
-            mask = [lm > avg for lm in lums]
-
-            bright = [p for p, m in zip(pix, mask, strict=True) if m]
-            dark = [p for p, m in zip(pix, mask, strict=True) if not m]
-
-            fg = np.mean(bright, axis=0).astype(int) if bright else np.mean(pix, axis=0).astype(int)
-            bg = np.mean(dark, axis=0).astype(int) if dark else fg
-
-            if all(mask) or not any(mask):
-                char_idx = 15
-            else:
-                q_val = 0
-                for i, m in enumerate(mask):
-                    if m:
-                        q_val += 1 << i
-                char_idx = q_val
-
-            line_parts.append(f"[{_hex(fg)} on {_hex(bg)}]{QUADRANTS[char_idx]}[/]")
+        for x in range(width):
+            top = arr[y, x]
+            bottom = arr[y + 1, x]
+            line_parts.append(f"[{_hex(top)} on {_hex(bottom)}]▀[/]")
         output_lines.append("".join(line_parts))
     return output_lines
 
 
 @functools.lru_cache(maxsize=64)
-def render_poster(poster_url: str, max_height: int = 40) -> Text:
+def render_poster(
+    poster_url: str,
+    max_height: int = 40,
+    max_chars: int | None = None,
+) -> Text:
     """Download a poster and return it as a Rich Text of ANSI block art.
+
+    ``max_chars`` caps the rendered character width so the poster never
+    overflows its panel; height shrinks to preserve aspect.
 
     Returns a friendly fallback text on any failure so callers never crash.
     """
     if not poster_url:
         return Text("No poster available", style="secondary")
     try:
-        from PIL import Image, ImageEnhance  # noqa: PLC0415 - lazy optional deps
+        from PIL import Image  # noqa: PLC0415 - lazy optional deps
+
+        scale = float(get("ui", "poster_scale", 1.0))
 
         with new_http_client(timeout=8.0) as client:
             res = client.get(poster_url)
             res.raise_for_status()
         img = Image.open(BytesIO(res.content)).convert("RGB")
 
-        img = ImageEnhance.Sharpness(img).enhance(1.8)
-        img = ImageEnhance.Contrast(img).enhance(1.15)
-
-        target_pixel_height = max_height * 2
-        new_height = target_pixel_height
-        new_width = int((img.width / img.height) * new_height * 2.0)
-        if new_width % 2 != 0:
-            new_width -= 1
-        if new_height % 2 != 0:
-            new_height -= 1
+        new_width, new_height = _poster_pixel_dims(
+            img.width, img.height, max_height, scale, max_chars,
+        )
+        if new_width < 1 or new_height < 2:
+            return Text("No poster available", style="secondary")
 
         img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
         arr = np.array(img, dtype=np.uint8)

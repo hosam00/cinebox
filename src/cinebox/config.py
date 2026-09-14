@@ -44,6 +44,7 @@ DEFAULTS: dict[str, dict] = {
     },
     "ui": {
         "theme": "blue",
+        "poster_scale": 1.0,
     },
     "discord": {
         "enabled": False,

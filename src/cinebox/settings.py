@@ -19,10 +19,14 @@ SUBS_SOURCES = ["auto", "provider", "yifysubtitles", "subsource"]
 DIRS = ["~/Movies", "~/Movies/TV", "~/Videos", "~/Downloads"]
 
 
+POSTER_SCALES = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8]
+
+
 def _ui_rows() -> list[Setting]:
     return [
         Setting("Discord RPC", "on" if get("discord", "enabled", False) else "off", "discord_rpc"),
         Setting("Theme", get("ui", "theme", "blue"), "theme"),
+        Setting("Poster width", str(get("ui", "poster_scale", 2.0)), "poster_scale"),
     ]
 
 
@@ -92,6 +96,11 @@ class SettingsEditor:
             if picked:
                 set_config("ui", "theme", picked)
                 self._reload_theme()
+        elif edit_id == "poster_scale":
+            scale_strs = [str(s) for s in POSTER_SCALES]
+            picked = self._pick(scale_strs, "Poster width (narrow → wide)")
+            if picked:
+                set_config("ui", "poster_scale", float(picked))
         elif edit_id == "player":
             picked = self._pick(PLAYERS, "Player")
             if picked:

@@ -352,7 +352,12 @@ class UIManager:
 
     # -- two-pane results menu ---------------------------------------------
 
-    def _warm_result(self, result: SearchResult, poster_height: int) -> None:
+    def _warm_result(
+        self,
+        result: SearchResult,
+        poster_height: int,
+        poster_max_chars: int | None = None,
+    ) -> None:
         """Background-fetch metadata + poster for a highlighted result."""
         try:
             meta = fetch_metadata_cached(result.imdb_id)
@@ -360,7 +365,7 @@ class UIManager:
                 self._meta_cache[result.imdb_id] = meta
         except Exception:  # noqa: BLE001
             pass
-        render_poster(result.image_url, poster_height)
+        render_poster(result.image_url, poster_height, poster_max_chars)
         with self._poster_lock:
             self._poster_ready[result.imdb_id] = True
 
@@ -379,13 +384,16 @@ class UIManager:
         selected = 0
         scroll_offset = 0
         screen_height = self.console.height
+        screen_width = self.console.width
         target_height = min(screen_height, 35)
         if target_height < 20:
             target_height = screen_height
         header_size = 10
         footer_size = 3
         max_display = max(5, target_height - header_size - footer_size - 4)
-        poster_height = max(10, target_height - 15)
+        body_rows = max(20, screen_height - header_size - footer_size)
+        poster_height = max(12, min(45, body_rows - 6))
+        pane_inner = max(10, (screen_width * 2 // 5) - 6)
         warmed: set[str] = set()
 
         def build_layout() -> Layout:
@@ -425,35 +433,34 @@ class UIManager:
         def make_right() -> Panel:
             result = results[selected]
             content = Text()
+            with self._poster_lock:
+                meta = self._meta_cache.get(result.imdb_id)
+                ready = self._poster_ready.get(result.imdb_id, False)
+            if result.image_url:
+                if ready:
+                    poster = render_poster(result.image_url, poster_height, pane_inner)
+                else:
+                    poster = Text("Loading poster…", style="dim")
+                content.append(poster)
+                content.append("\n\n")
             content.append(f"{result.title}", style=COLOR_TITLE)
             content.append("\n")
             desc = f"{result.media_type.value.upper()} • {result.year or 'year n/a'}"
             content.append(f"{desc}", style=COLOR_SECONDARY_TEXT)
             if result.cast:
-                content.append(f"\n\nCast:\n [dim]{result.cast}[/dim]")
-            with self._poster_lock:
-                meta = self._meta_cache.get(result.imdb_id)
-                ready = self._poster_ready.get(result.imdb_id, False)
+                content.append(f"\nCast: [dim]{result.cast}[/dim]")
             if meta is not None and not getattr(meta, "is_empty", False):
                 rating = meta.rating[0] if meta.rating else "N/A"
                 star = "⭐ " if meta.rating else ""
-                content.append(f"\nRating:\n  [bold #FFA500]{star}{rating}[/]")
+                content.append(f"\n[bold #FFA500]{star}{rating}[/]")
                 if meta.genres:
-                    content.append(f"\nGenres:\n [dim]{', '.join(meta.genres[:3])}[/dim]")
+                    content.append(f" · [dim]{', '.join(meta.genres[:3])}[/dim]")
                 if meta.runtime:
-                    content.append(f"\nRuntime: [dim]{meta.runtime}[/dim]")
+                    content.append(f" · {meta.runtime}")
                 if meta.plot:
-                    content.append(f"\n\n{meta.plot}", style=COLOR_SECONDARY_TEXT)
-            if result.image_url:
-                if ready:
-                    poster = render_poster(result.image_url, poster_height)
-                else:
-                    poster = Text("Loading poster…", style="dim")
-                block = Text("\n")
-                block.append(poster)
-                content.append(block)
-            else:
-                content.append("\n\n[dim]No poster available[/dim]")
+                    content.append(f"\n[dim]{meta.plot}[/dim]")
+            if not result.image_url:
+                content.append("\n[dim]No poster available[/dim]")
             return Panel(
                 content,
                 title=Text("Details", style=COLOR_TITLE),
@@ -479,7 +486,7 @@ class UIManager:
             )
             return layout
 
-        self._warm_result(results[0], poster_height)
+        self._warm_result(results[0], poster_height, pane_inner)
         warmed.add(results[0].imdb_id)
 
         self.clear()
@@ -508,7 +515,7 @@ class UIManager:
                     else:
                         continue
                     if results[selected].imdb_id not in warmed:
-                        self._warm_result(results[selected], poster_height)
+                        self._warm_result(results[selected], poster_height, pane_inner)
                         warmed.add(results[selected].imdb_id)
                     live.update(generate(), refresh=True)
 
