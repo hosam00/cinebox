@@ -1,14 +1,19 @@
 """Subtitle handling.
 
-Sources, no API keys needed:
+Sources (three keyless, one optional account):
 
 1. Provider-supplied tracks (imdb.su/vaplayer ``default_subs``), the same
    tracks the player's own subtitle chooser exposes. Empty for many titles.
 2. YIFYS subtitles (yifysubtitles.ch) — anonymous movie page by IMDb ID,
    real .srt downloads (zip) for the configured languages.
 3. SubSource (subsource.net) — anonymous TV-show season / movie pages
-   with per-episode subtitle zips, grep-able from the server-rendered
+   with per-episode subtitle zips (whole-season packs are rejected because
+   they can contain the wrong episode), grep-able from the server-rendered
    Next.js data payload (no API key, no captcha).
+4. OpenSubtitles (api.opensubtitles.com) — best index for per-episode
+   TV subs. Needs a free API key plus account username/password under
+   ``[opensubtitles]``; queries by IMDb ID + season/episode, downloads
+   via its REST download endpoint. Used as a last-resort source.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from urllib.parse import urlparse
 
 from .config import cache_dir, get
 from .models import SubtitleTrack
-from .utils import Log, new_http_client
+from .utils import Log, new_http_client, validate_stream_url
 
 HEADERS = {
     "User-Agent": (
@@ -110,9 +115,7 @@ LANG_NAMES = {
 }
 
 
-def pick_track(
-    tracks: list[SubtitleTrack], language: str
-) -> SubtitleTrack | None:
+def pick_track(tracks: list[SubtitleTrack], language: str) -> SubtitleTrack | None:
     """Pick the subtitle track closest to the requested language.
 
     Matches on the ISO code first, then by substring in the language label;
@@ -151,25 +154,74 @@ _SUBSOURCE_API = "https://api.subsource.net"
 
 # SubSource catalog language slug -> 2-letter code.
 SUBSOURCE_LANGS = {
-    "english": "en", "arabic": "ar", "french": "fr", "spanish": "es",
-    "german": "de", "hindi": "hi", "portuguese": "pt",
-    "brazilian_portuguese": "pt", "russian": "ru", "japanese": "ja",
-    "chinese": "zh", "big_5_code": "zh", "italian": "it", "turkish": "tr",
-    "dutch": "nl", "polish": "pl", "swedish": "sv", "danish": "da",
-    "finnish": "fi", "norwegian": "no", "greek": "el", "hebrew": "he",
-    "korean": "ko", "indonesian": "id", "malay": "ms", "thai": "th",
-    "vietnamese": "vi", "ukrainian": "uk", "romanian": "ro",
-    "czech": "cs", "hungarian": "hu", "bulgarian": "bg", "persian": "fa",
-    "farsi_persian": "fa", "serbian": "sr", "croatian": "hr",
-    "bengali": "bn", "malayalam": "ml", "tamil": "ta", "telugu": "te",
-    "urdu": "ur", "kurdish": "ku", "slovak": "sk", "slovenian": "sl",
-    "estonian": "et", "latvian": "lv", "lithuanian": "lt",
-    "icelandic": "is", "albanian": "sq", "armenian": "hy",
-    "georgian": "ka", "macedonian": "mk", "bosnian": "bs",
-    "afrikaans": "af", "mongolian": "mn", "nepali": "ne", "punjabi": "pa",
-    "sinhala": "si", "swahili": "sw", "tagalog": "tl", "catalan": "ca",
-    "galician": "gl", "basque": "eu", "welsh": "cy", "burmese": "my",
-    "khmer": "km", "lao": "lo", "uzbek": "uz",
+    "english": "en",
+    "arabic": "ar",
+    "french": "fr",
+    "spanish": "es",
+    "german": "de",
+    "hindi": "hi",
+    "portuguese": "pt",
+    "brazilian_portuguese": "pt",
+    "russian": "ru",
+    "japanese": "ja",
+    "chinese": "zh",
+    "big_5_code": "zh",
+    "italian": "it",
+    "turkish": "tr",
+    "dutch": "nl",
+    "polish": "pl",
+    "swedish": "sv",
+    "danish": "da",
+    "finnish": "fi",
+    "norwegian": "no",
+    "greek": "el",
+    "hebrew": "he",
+    "korean": "ko",
+    "indonesian": "id",
+    "malay": "ms",
+    "thai": "th",
+    "vietnamese": "vi",
+    "ukrainian": "uk",
+    "romanian": "ro",
+    "czech": "cs",
+    "hungarian": "hu",
+    "bulgarian": "bg",
+    "persian": "fa",
+    "farsi_persian": "fa",
+    "serbian": "sr",
+    "croatian": "hr",
+    "bengali": "bn",
+    "malayalam": "ml",
+    "tamil": "ta",
+    "telugu": "te",
+    "urdu": "ur",
+    "kurdish": "ku",
+    "slovak": "sk",
+    "slovenian": "sl",
+    "estonian": "et",
+    "latvian": "lv",
+    "lithuanian": "lt",
+    "icelandic": "is",
+    "albanian": "sq",
+    "armenian": "hy",
+    "georgian": "ka",
+    "macedonian": "mk",
+    "bosnian": "bs",
+    "afrikaans": "af",
+    "mongolian": "mn",
+    "nepali": "ne",
+    "punjabi": "pa",
+    "sinhala": "si",
+    "swahili": "sw",
+    "tagalog": "tl",
+    "catalan": "ca",
+    "galician": "gl",
+    "basque": "eu",
+    "welsh": "cy",
+    "burmese": "my",
+    "khmer": "km",
+    "lao": "lo",
+    "uzbek": "uz",
 }
 
 
@@ -226,8 +278,7 @@ def _parse_yify_movie(html: str, lang_codes: list[str]) -> list[SubtitleTrack]:
         releases = _RELEASES_RE.search(block)
         if releases:
             labels = [
-                re.sub(r"<[^>]+>", "", part).strip()
-                for part in releases.group(1).split("<br")
+                re.sub(r"<[^>]+>", "", part).strip() for part in releases.group(1).split("<br")
             ]
         release = next((x for x in labels if x), "") or slug.rsplit("/", 1)[-1]
         rows.append(
@@ -245,9 +296,7 @@ def _parse_yify_movie(html: str, lang_codes: list[str]) -> list[SubtitleTrack]:
 
 
 def _cache_file(imdb_id: str, lang_codes: list[str]) -> Path:
-    key = hashlib.md5(
-        f"{imdb_id}|{','.join(sorted(lang_codes))}".encode()
-    ).hexdigest()
+    key = hashlib.md5(f"{imdb_id}|{','.join(sorted(lang_codes))}".encode()).hexdigest()
     return cache_dir() / f"yify_{key}.json"
 
 
@@ -285,11 +334,7 @@ def fetch_yify(
         try:
             if _cache_valid(cache_path):
                 raw = json.loads(cache_path.read_text())
-                return [
-                    track
-                    for entry in raw
-                    if (track := _track_from_cache(entry)) is not None
-                ]
+                return [track for entry in raw if (track := _track_from_cache(entry)) is not None]
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -309,17 +354,13 @@ def fetch_yify(
 
     if cache_enabled:
         try:
-            cache_path.write_text(
-                json.dumps([t.model_dump() for t in capped])
-            )
+            cache_path.write_text(json.dumps([t.model_dump() for t in capped]))
         except OSError:
             pass
     return capped
 
 
-def _cap_lang(
-    tracks: list[SubtitleTrack], per_lang: int
-) -> list[SubtitleTrack]:
+def _cap_lang(tracks: list[SubtitleTrack], per_lang: int) -> list[SubtitleTrack]:
     """Keep at most ``per_lang`` tracks per language, preserving order."""
     capped: list[SubtitleTrack] = []
     counts: dict[str, int] = {}
@@ -347,9 +388,13 @@ def _subsource_cache_file(
     season: int | None,
     episode: int | None,
     lang_codes: list[str],
+    year: int | None = None,
 ) -> Path:
+    # Version the key so old season-pack caches are ignored; include ``year``
+    # because movie remakes share a slug but not subtitles.
     key = hashlib.md5(
-        f"{slug}|{season or 'mo'}|{episode or 'x'}|{','.join(sorted(lang_codes))}".encode()
+        f"v3|{slug}|{season or 'mo'}|{episode or 'x'}|{year or ''}|"
+        f"{','.join(sorted(lang_codes))}".encode()
     ).hexdigest()
     return cache_dir() / f"subsource_{key}.json"
 
@@ -358,7 +403,7 @@ def _subsource_blob(html: str) -> str:
     """Unescape the Next.js ``self.__next_f`` payload the catalog is in."""
     chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.S)
     return "".join(
-        chunk.encode().decode("unicode_escape", errors="replace").replace('\\"""', '')
+        chunk.encode().decode("unicode_escape", errors="replace").replace('\\"""', "")
         for chunk in chunks
     )
 
@@ -400,9 +445,9 @@ def _parse_subsource_page(
             continue
         if episode is not None:
             ep_m = _SUBSOURCE_EP_RE.search(release)
-            if not ep_m:
-                continue
-            if int(ep_m.group(1)) != season or int(ep_m.group(2)) != episode:
+            # Reject whole-season packs: selecting one file from the archive
+            # can serve the wrong episode. Require an explicit SxxExx match.
+            if not ep_m or int(ep_m.group(1)) != season or int(ep_m.group(2)) != episode:
                 continue
 
         key = (code, release)
@@ -442,16 +487,12 @@ def fetch_subsource(
         return []
 
     cache_enabled = get("cache", "enabled", True)
-    cache_path = _subsource_cache_file(slug, season, episode, lang_codes)
+    cache_path = _subsource_cache_file(slug, season, episode, lang_codes, year)
     if cache_enabled:
         try:
             if _cache_valid(cache_path):
                 raw = json.loads(cache_path.read_text())
-                return [
-                    track
-                    for entry in raw
-                    if (track := _track_from_cache(entry)) is not None
-                ]
+                return [track for entry in raw if (track := _track_from_cache(entry)) is not None]
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -473,9 +514,7 @@ def fetch_subsource(
                 if resp.status_code == 404:
                     continue
                 resp.raise_for_status()
-                tracks = _parse_subsource_page(
-                    resp.text, page_slug, season, episode, lang_codes
-                )
+                tracks = _parse_subsource_page(resp.text, page_slug, season, episode, lang_codes)
                 break
         except Exception as e:  # noqa: BLE001 - subtitles are optional
             Log.debug(f"SubSource fetch failed ({page_slug}): {e}")
@@ -541,15 +580,15 @@ _LANG_CODEC = {
 }
 
 _SCRIPT_BLOCKS = {
-    "cp1256": (0x0600, 0x06FF),   # Arabic
-    "cp1251": (0x0400, 0x04FF),   # Cyrillic
-    "cp1253": (0x0370, 0x03FF),   # Greek
-    "cp1255": (0x0590, 0x05FF),   # Hebrew
+    "cp1256": (0x0600, 0x06FF),  # Arabic
+    "cp1251": (0x0400, 0x04FF),  # Cyrillic
+    "cp1253": (0x0370, 0x03FF),  # Greek
+    "cp1255": (0x0590, 0x05FF),  # Hebrew
     "shift_jis": (0x3040, 0x9FFF),  # Japanese / CJK
     "gb18030": (0x4E00, 0x9FFF),  # CJK ideographs
-    "cp949": (0xAC00, 0xD7FF),    # Hangul
-    "cp874": (0x0E00, 0x0E7F),    # Thai
-    "cp1252": (0x00C0, 0x017F),   # Latin extended
+    "cp949": (0xAC00, 0xD7FF),  # Hangul
+    "cp874": (0x0E00, 0x0E7F),  # Thai
+    "cp1252": (0x00C0, 0x017F),  # Latin extended
 }
 
 
@@ -611,9 +650,7 @@ def _decode_subtitle(data: bytes, code: str = "en") -> bytes | None:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 subs = [
-                    (n, zf.read(n))
-                    for n in zf.namelist()
-                    if Path(n).suffix.lower() in _SUB_EXTS
+                    (n, zf.read(n)) for n in zf.namelist() if Path(n).suffix.lower() in _SUB_EXTS
                 ]
             if not subs:
                 return None
@@ -623,21 +660,53 @@ def _decode_subtitle(data: bytes, code: str = "en") -> bytes | None:
             return None
     if b"<html" in data[:256].lower():
         return None
-    if b"-->" not in data:
+    data = _normalize_subtitle(data, code)
+    if b"-->" not in data and not (
+        b"[script info]" in data[:512].lower() or b"dialogue:" in data[:512].lower()
+    ):
         return None
-    return _normalize_subtitle(data)
+    return data
+
+
+def _safe_subtitle_code(code: str) -> str:
+    """Return a filesystem-safe subtitle language code."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "", code or "")[:16]
+    return cleaned.strip("._-") or "en"
+
+
+def _subtitle_extension(data: bytes, fallback: str = ".srt") -> str:
+    """Detect the subtitle container from its content."""
+    head = data[:512].lower()
+    if b"[script info]" in head or b"dialogue:" in head:
+        return ".ass"
+    return fallback if fallback in _SUB_EXTS else ".srt"
+
+
+def _write_subtitle(data: bytes, path: Path) -> Path:
+    """Write subtitle bytes, correcting the extension when content differs."""
+    ext = _subtitle_extension(data, path.suffix.lower())
+    if ext != path.suffix.lower():
+        path = path.with_suffix(ext)
+    path.write_bytes(data)
+    return path
 
 
 def _download_url(track: SubtitleTrack, dest: str | Path) -> Path | None:
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.chmod(0o700)
+    except OSError:
+        pass
 
     ext = Path(urlparse(track.url).path).suffix.lower()
     if ext not in _SUB_EXTS:
         ext = ".srt"
-    path = dest / f"{track.code or 'en'}{ext}"
+    path = dest / f"{_safe_subtitle_code(track.code)}{ext}"
 
     headers = dict(HEADERS)
+    if track.url.startswith("os:"):
+        return _download_opensubtitles(track.url[3:], path, headers, track.code)
     if "yifysubtitles.ch" in track.url:
         # YIFYS requires a referer from the subtitle detail page.
         slug = Path(urlparse(track.url).path).stem
@@ -653,7 +722,7 @@ def _download_url(track: SubtitleTrack, dest: str | Path) -> Path | None:
         if data is None:
             Log.debug(f"Subtitle download unusable ({track.code}): {track.url}")
             return None
-        path.write_bytes(data)
+        path = _write_subtitle(data, path)
     except Exception as e:  # noqa: BLE001 - optional feature
         Log.debug(f"Subtitle download failed ({track.code}): {e}")
         return None
@@ -661,9 +730,7 @@ def _download_url(track: SubtitleTrack, dest: str | Path) -> Path | None:
     return path
 
 
-def _download_subsource(
-    track: SubtitleTrack, path: Path, headers: dict[str, str]
-) -> Path | None:
+def _download_subsource(track: SubtitleTrack, path: Path, headers: dict[str, str]) -> Path | None:
     """Download a SubSource subtitle: detail page -> download hash -> zip.
 
     The catalog only stores the detail-page URL; the actual file alias lives
@@ -681,18 +748,272 @@ def _download_subsource(
             if not link_m:
                 Log.debug(f"SubSource page has no download link: {track.url}")
                 return None
-            api_url = (
-                f"{_SUBSOURCE_API}/v1/subtitle/download/{link_m.group(1)}"
-            )
+            api_url = f"{_SUBSOURCE_API}/v1/subtitle/download/{link_m.group(1)}"
             resp = client.get(api_url, headers={"Referer": track.url})
             resp.raise_for_status()
         data = _decode_subtitle(resp.content, track.code or "en")
         if data is None:
             Log.debug(f"Subtitle download unusable ({track.code}): {track.url}")
             return None
-        path.write_bytes(data)
+        path = _write_subtitle(data, path)
     except Exception as e:  # noqa: BLE001 - optional feature
         Log.debug(f"Subtitle download failed ({track.code}): {e}")
         return None
     Log.info(f"Subtitle saved: {path}")
     return path
+
+
+# -- OpenSubtitles (api.opensubtitles.com) ----------------------------------
+
+
+_OS_BASE = "https://api.opensubtitles.com/api/v1"
+_OS_TOKEN_TTL = 12 * 3600  # JWT lasts ~24h; refresh well before expiry.
+
+
+def _os_api_key() -> str:
+    if not get("opensubtitles", "enabled", True):
+        return ""
+    return get("opensubtitles", "api_key", "").strip()
+
+
+def _os_credentials_fingerprint() -> str:
+    """Hash the current OpenSubtitles credentials for token cache validation."""
+    raw = "\0".join(
+        (
+            _os_api_key(),
+            (get("opensubtitles", "username", "") or "").strip(),
+            get("opensubtitles", "password", "") or "",
+        )
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _os_token(refresh: bool = False) -> str | None:
+    """Return a cached OpenSubtitles JWT, logging in (once) when needed."""
+    if not _os_api_key():
+        return None
+    fingerprint = _os_credentials_fingerprint()
+    cache_path = cache_dir() / "os_token.json"
+    if not refresh:
+        try:
+            if cache_path.exists() and time.time() - cache_path.stat().st_mtime < _OS_TOKEN_TTL:
+                cached = json.loads(cache_path.read_text())
+                token = cached.get("token")
+                if token and cached.get("fingerprint") == fingerprint:
+                    cache_path.chmod(0o600)
+                    return token
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    user = (get("opensubtitles", "username", "") or "").strip()
+    pwd = get("opensubtitles", "password", "") or ""
+    if not user or not pwd:
+        Log.debug("OpenSubtitles login skipped: username/password not configured.")
+        return None
+    body = {"username": user, "password": pwd}
+    try:
+        with new_http_client(headers={**HEADERS, "Api-Key": _os_api_key()}) as client:
+            resp = client.post(f"{_OS_BASE}/login", json=body)
+            resp.raise_for_status()
+            token = resp.json().get("token")
+    except Exception as e:  # noqa: BLE001 - optional feature
+        Log.debug(f"OpenSubtitles login failed: {e}")
+        return None
+    if not token:
+        return None
+    _os_remember_token(token, fingerprint)
+    return token
+
+
+def _os_remember_token(token: str, fingerprint: str | None = None) -> None:
+    try:
+        path = cache_dir() / "os_token.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "token": token,
+                    "fingerprint": fingerprint or _os_credentials_fingerprint(),
+                }
+            )
+        )
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _os_imdb_number(imdb_id: str) -> str | None:
+    """Return the numeric IMDb ID for OpenSubtitles, or None if unsupported."""
+    raw = (imdb_id or "").strip()
+    if raw[:2].lower() == "tt":
+        raw = raw[2:]
+    if not raw.isdigit():
+        return None
+    return str(int(raw))
+
+
+def _os_cache_file(
+    imdb_id: str,
+    season: int | None,
+    episode: int | None,
+    lang_codes: list[str],
+) -> Path:
+    key = hashlib.md5(
+        f"os|{imdb_id}|{season or ''}|{episode or ''}|{','.join(sorted(lang_codes))}".encode()
+    ).hexdigest()
+    return cache_dir() / f"opensubs_{key}.json"
+
+
+def _normalize_os_code(lang: str, wanted: set[str]) -> str | None:
+    """Map an OpenSubtitles language tag (``pt-br``, ``en``) to a wanted code."""
+    short = (lang or "").strip().lower().split("-")[0]
+    return short if short in wanted else None
+
+
+def _os_headers() -> dict[str, str]:
+    headers = dict(HEADERS)
+    headers["Api-Key"] = _os_api_key()
+    token = _os_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_opensubtitles(
+    imdb_id: str,
+    langs: str | list[str] = "en",
+    season: int | None = None,
+    episode: int | None = None,
+    per_lang: int = 3,
+) -> list[SubtitleTrack]:
+    """Search OpenSubtitles API v3 by IMDb ID (and season/episode for TV).
+
+    Requires ``[opensubtitles] api_key`` plus account username/password.
+    Tracks are labeled with the release name and downloaded later via the
+    API ``/download`` endpoint. Results are cached on disk honoring
+    ``[cache] ttl_hours``.
+    """
+    if isinstance(langs, str):
+        langs = [langs]
+    lang_codes = [c.strip().lower() for c in langs if c and c.strip()]
+    imdb_number = _os_imdb_number(imdb_id)
+    if not lang_codes or not _os_api_key() or imdb_number is None:
+        return []
+
+    cache_enabled = get("cache", "enabled", True)
+    cache_path = _os_cache_file(imdb_id, season, episode, lang_codes)
+    if cache_enabled:
+        try:
+            if _cache_valid(cache_path):
+                raw = json.loads(cache_path.read_text())
+                return [track for entry in raw if (track := _track_from_cache(entry)) is not None]
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    params = {
+        # The API canonicalizes "tt0118480" -> "118480" via a 301; send the
+        # bare numeric id to avoid the redirect.
+        "imdb_id": imdb_number,
+        "languages": ",".join(lang_codes),
+        "ai_translated": "exclude",
+        "order_by": "download_count",
+        "order_direction": "desc",
+        "per_page": "20",
+    }
+    if season is not None:
+        params["season_number"] = str(season)
+        params["episode_number"] = str(episode or 1)
+    wanted = set(lang_codes)
+    tracks: list[SubtitleTrack] = []
+    try:
+        with new_http_client(headers=_os_headers()) as client:
+            resp = client.get(f"{_OS_BASE}/subtitles", params=params)
+            if resp.status_code == 401:
+                _os_token(refresh=True)
+                with new_http_client(headers=_os_headers()) as retry_client:
+                    resp = retry_client.get(f"{_OS_BASE}/subtitles", params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+        for item in payload.get("data", []):
+            attr = item.get("attributes") or {}
+            code = _normalize_os_code(attr.get("language"), wanted)
+            if not code:
+                continue
+            files = attr.get("files") or []
+            fid = next(
+                (
+                    f.get("file_id")
+                    for f in files
+                    if str(f.get("format", "")).lower() in ("srt", "vtt", "ass", "ssa")
+                ),
+                None,
+            )
+            if fid is None and files:
+                fid = files[0].get("file_id")
+            if fid is None:
+                continue
+            release = (
+                (attr.get("release_name") or "") or (files[0].get("file_name") or "") or ""
+            ).strip()
+            if not release:
+                release = f"episode {episode}" if episode else f"id {item.get('id')}"
+            hi = " [HI]" if attr.get("hearing_impaired") else ""
+            label = f"{LANG_NAMES.get(code, code)}{hi} — {release}"
+            tracks.append(SubtitleTrack(lang=label, code=code, url=f"os:{fid}"))
+    except Exception as e:  # noqa: BLE001 - subtitles are optional
+        Log.debug(f"OpenSubtitles search failed ({imdb_id}): {e}")
+        return []
+
+    capped = _cap_lang(tracks, per_lang)
+    if capped and cache_enabled:
+        try:
+            cache_path.write_text(json.dumps([t.model_dump() for t in capped]))
+        except OSError:
+            pass
+    return capped
+
+
+def _download_opensubtitles(
+    file_id: str, path: Path, headers: dict[str, str], code: str = "en"
+) -> Path | None:
+    """Fetch an OpenSubtitles file: POST download token -> GET its byte link.
+
+    Retries once on 401 (token refresh).
+    """
+    for attempt in range(2):
+        token = _os_token(refresh=attempt > 0)
+        if not token:
+            return None
+        bh = {
+            **headers,
+            "Api-Key": _os_api_key(),
+            "Authorization": f"Bearer {token}",
+        }
+        try:
+            with new_http_client(headers=bh) as client:
+                r = client.post(f"{_OS_BASE}/download", json={"file_id": int(file_id)})
+                if r.status_code == 401:
+                    continue
+                r.raise_for_status()
+                link = (r.json() or {}).get("link")
+                if not link:
+                    Log.debug(f"OpenSubtitles download miss ({file_id})")
+                    return None
+            # Never send the API key/JWT to the arbitrary download host.
+            link_url = validate_stream_url(link)
+            with new_http_client(headers=HEADERS) as download_client:
+                data = download_client.get(link_url)
+                data.raise_for_status()
+                content = data.content
+        except Exception as e:  # noqa: BLE001 - optional feature
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            detail = f"HTTP {status}" if status else type(e).__name__
+            Log.debug(f"OpenSubtitles download failed ({file_id}): {detail}")
+            return None
+        decoded = _decode_subtitle(content, code or "en")
+        if decoded is None:
+            Log.debug(f"OpenSubtitles download unusable ({file_id})")
+            return None
+        path = _write_subtitle(decoded, path)
+        Log.info(f"Subtitle saved: {path}")
+        return path
+    return None

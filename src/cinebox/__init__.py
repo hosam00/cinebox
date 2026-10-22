@@ -7,7 +7,7 @@ import sys
 import click
 from rich.align import Align
 
-from .config import ensure_config, get
+from .config import cache_dir, ensure_config, get
 from .discord_rpc import DiscordRPCManager
 from .downloader import (
     download_stream,
@@ -17,15 +17,22 @@ from .downloader import (
 )
 from .favorites import FavoritesManager
 from .history import HistoryManager
-from .models import MediaType, SearchResult, StreamInfo
+from .models import MediaType, SearchResult, StreamInfo, SubtitleTrack
 from .player import play, player_exists
 from .providers import ResolutionError, build_registry
 from .providers.imdb_su import ImdbSuProvider, _discover_player_host
 from .search import search_all
-from .subtitles import download_subtitle, fetch_subsource, fetch_yify, pick_track
+from .subtitles import (
+    download_subtitle,
+    fetch_opensubtitles,
+    fetch_subsource,
+    fetch_yify,
+    pick_track,
+)
 from .ui import UIManager
 from .ui.art import get_goodbye_renderable
-from .utils import Log
+from .ui.components import QUIT as UI_QUIT
+from .utils import Log, sanitize_filename
 
 
 def _parse_media_type(raw: str) -> MediaType | None:
@@ -46,11 +53,39 @@ def _prompt_player() -> str:
     return p
 
 
+def _unique_labels(labels: list[str]) -> list[str]:
+    """Disambiguate duplicate display labels so selection is unambiguous."""
+    counts: dict[str, int] = {}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    reserved = set(labels)
+    used: set[str] = set()
+    out: list[str] = []
+    for label in labels:
+        candidate = label
+        if counts[label] > 1:
+            suffix = 1
+            candidate = f"{label} [{suffix}]"
+            while candidate in used or candidate in reserved:
+                suffix += 1
+                candidate = f"{label} [{suffix}]"
+        used.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def _favorite_label(entry: dict) -> str:
+    title = entry.get("title") or entry.get("imdb_id") or "?"
+    year = entry.get("year")
+    return f"{title} ({year})" if year else str(title)
+
+
 class CineApp:
     """Drives the TUI through search → select → play/download flows."""
 
-    def __init__(self, verbose: bool = False) -> None:
-        Log.verbose = verbose
+    def __init__(self, verbose: bool | None = None) -> None:
+        if verbose is not None:
+            Log.verbose = verbose
         self.ui = UIManager()
         self.history = HistoryManager()
         self.favorites = FavoritesManager()
@@ -105,6 +140,12 @@ class CineApp:
                 f"Searching '{query}'…", search_all, query, media_type, self.registry
             )
         except (KeyboardInterrupt, EOFError):
+            return
+        except Exception as e:  # noqa: BLE001 - user-facing
+            if self._interactive:
+                self._message("Search failed", str(e), "error")
+            else:
+                click.echo(f"Search failed: {e}", err=True)
             return
         if not results:
             if self._interactive:
@@ -173,12 +214,18 @@ class CineApp:
         except Exception as e:  # noqa: BLE001 - user-facing
             self._resolution_failure(e, "No stream")
             return True
-        action = self._quality_and_act(stream, chosen, None, None, intent)
-        if not self._interactive or action != "watch":
+        result = self._quality_and_act(stream, chosen, None, None, intent)
+        if result is None:
+            return True
+        action, acted = result
+        if not self._interactive or action != "watch" or not acted:
             return True
         option = self.ui.post_watch_menu(["Replay", "Back to List"])
         if option == "Replay":
             return self._movie_flow(chosen, intent)
+        if option == "Quit":
+            self._goodbye()
+            raise SystemExit(0)
         return True
 
     def _tv_flow(self, chosen: SearchResult) -> bool:
@@ -200,23 +247,27 @@ class CineApp:
             self._message("No episodes", "No episode data returned.", "error")
             return True
 
-        seasons = sorted(
-            eps_map.keys(), key=lambda s: int(s) if str(s).isdigit() else 0
-        )
+        seasons = sorted(eps_map.keys(), key=lambda s: int(s) if str(s).isdigit() else 0)
         season = int(seasons[0]) if seasons else 1
         if len(seasons) > 1:
-            pick = self._pick(
-                [f"Season {s}" for s in seasons], f"{chosen.title} — Season"
-            )
+            pick = self._pick([f"Season {s}" for s in seasons], f"{chosen.title} — Season")
             if pick is None:
                 return True
             season = int(pick.split()[-1])
 
         episodes = sorted({int(e) for e in eps_map.get(str(season), [])})
         if not episodes:
-            self._message(
-                "No episodes", f"No episodes for season {season}.", "error"
+            self._message("No episodes", f"No episodes for season {season}.", "error")
+            return True
+
+        if not self._interactive:
+            pick = self._pick(
+                [f"E{e}" for e in episodes],
+                f"{chosen.title} — Season {season}",
             )
+            if pick is None:
+                return True
+            self._play_watched_episode(chosen, season, int(pick[1:]), episodes)
             return True
 
         while True:
@@ -230,18 +281,19 @@ class CineApp:
                 return True
             if choice is None:
                 return False
+            if choice.action == "quit":
+                self._goodbye()
+                raise SystemExit(0)
             if choice.action == "back":
                 return True
             if choice.action == "download":
                 if choice.marked:
-                    targets = list(choice.marked)
+                    targets = self._marked_episode_numbers(episodes, choice.marked)
                 else:
                     targets = [episodes[choice.index]]
                 self._download_episodes(chosen, season, targets)
                 continue
-            self._play_watched_episode(
-                chosen, season, episodes[choice.index], episodes
-            )
+            self._play_watched_episode(chosen, season, episodes[choice.index], episodes)
 
     def _play_watched_episode(
         self,
@@ -262,10 +314,22 @@ class CineApp:
             except Exception:  # noqa: BLE001
                 eps_map = {}
             episodes = sorted({int(e) for e in eps_map.get(str(season), [])})
+            if not episodes:
+                episodes = [episode]
+            elif episode not in episodes:
+                episodes = sorted({*episodes, episode})
+        if not episodes:
+            self._message("No episodes", f"No episodes for season {season}.", "error")
+            return
         try:
             idx = episodes.index(episode)
         except ValueError:
-            idx = 0
+            self._message(
+                "No episode",
+                f"S{season:02d}E{episode:02d} is not in the episode list.",
+                "error",
+            )
+            return
         while True:
             try:
                 stream = self._load(
@@ -279,8 +343,11 @@ class CineApp:
             except Exception as e:  # noqa: BLE001 - user-facing
                 self._resolution_failure(e, "No stream")
                 return
-            action = self._quality_and_act(stream, chosen, season, episodes[idx], "play")
-            if not self._interactive or action != "watch":
+            result = self._quality_and_act(stream, chosen, season, episodes[idx], "play")
+            if result is None:
+                return
+            action, acted = result
+            if not self._interactive or action != "watch" or not acted:
                 return
             option = self.ui.post_watch_menu()
             if option == "Next Episode":
@@ -297,6 +364,9 @@ class CineApp:
                 return
             if option == "Replay":
                 continue
+            if option == "Quit":
+                self._goodbye()
+                raise SystemExit(0)
             return  # Back to List
 
     # -- quality / act -----------------------------------------------------
@@ -308,11 +378,12 @@ class CineApp:
         season: int | None,
         episode: int | None,
         intent: str,
-    ) -> str | None:
+    ) -> tuple[str, bool] | None:
         """Let the user pick a quality and act (watch/download).
 
-        Returns the chosen action ("watch" or "download"), or None when the
-        user backed out.
+        Returns ``(action, acted)`` where action is "watch" or "download";
+        None means the user backed out. ``acted`` is False when playback or
+        download failed, so callers can skip the post-watch menu.
         """
         qualities = stream.quality_choices or ["1080p (4.5 Mbps)"]
         label = chosen.title
@@ -338,8 +409,8 @@ class CineApp:
             quality_label = qualities[picked_idx]
         else:
             quality_label = qualities[-1]
-        self._act(stream, chosen, quality_label, season, episode, action)
-        return action
+        acted = self._act(stream, chosen, quality_label, season, episode, action)
+        return action, acted
 
     def _act(
         self,
@@ -349,7 +420,7 @@ class CineApp:
         season: int | None,
         episode: int | None,
         action: str,
-    ) -> None:
+    ) -> bool:
         if action == "download":
             out = get("download", "tv_dir" if season is not None else "movies_dir", "~/Movies")
             if season is not None:
@@ -360,13 +431,18 @@ class CineApp:
             try:
                 path = self._load(
                     f"Downloading {quality_label}…",
-                    download_stream, stream, out, quality_label, filename,
+                    download_stream,
+                    stream,
+                    out,
+                    quality_label,
+                    filename,
                     format_selector_for_height(height),
                 )
                 self._message("Done", f"Saved to {path}", "success")
             except Exception as e:  # noqa: BLE001 - user-facing
                 self._message("Download failed", str(e), "error")
-            return
+                return False
+            return True
         self._record_history(chosen, season, episode, stream)
         subtitle_file = self._fetch_subtitle(stream, chosen, season, episode)
         player = _prompt_player()
@@ -374,7 +450,7 @@ class CineApp:
         detail = f"• S{season:02d}E{episode:02d} •" if season is not None else ""
         try:
             self.ui.now_playing(title, detail, quality_label)
-            play(
+            returncode = play(
                 stream,
                 player=player,
                 subtitle_file=subtitle_file,
@@ -383,6 +459,11 @@ class CineApp:
             )
         except Exception as e:  # noqa: BLE001 - user-facing
             self._message("Playback error", str(e), "error")
+            return False
+        if returncode != 0:
+            self._message("Playback error", f"{player} exited with code {returncode}.", "error")
+            return False
+        return True
 
     def _download_one(
         self, chosen: SearchResult, season: int | None, episode: int | None, quality: str
@@ -392,7 +473,11 @@ class CineApp:
         try:
             stream = self._load(
                 f"Resolving {mtype.value}…",
-                self.registry.resolve, chosen.imdb_id, mtype, season, episode,
+                self.registry.resolve,
+                chosen.imdb_id,
+                mtype,
+                season,
+                episode,
             )
         except Exception as e:  # noqa: BLE001 - user-facing
             self._resolution_failure(e, "No stream")
@@ -402,38 +487,47 @@ class CineApp:
         try:
             path = self._load(
                 f"Downloading ({quality})…",
-                download_stream, stream, out, quality, filename,
+                download_stream,
+                stream,
+                out,
+                quality,
+                filename,
             )
             self._record_history(chosen, season, episode, stream)
             self._message("Done", f"Saved to {path}", "success")
         except Exception as e:  # noqa: BLE001 - user-facing
             self._message("Download failed", str(e), "error")
 
-    def _download_episodes(
-        self, chosen: SearchResult, season: int, episodes: list[int]
-    ) -> None:
+    @staticmethod
+    def _marked_episode_numbers(episodes: list[int], marked: tuple[int, ...]) -> list[int]:
+        """Translate episode-picker indices to actual episode numbers."""
+        return [episodes[index] for index in marked if 0 <= index < len(episodes)]
+
+    def _download_episodes(self, chosen: SearchResult, season: int, episodes: list[int]) -> None:
         out = get("download", "tv_dir", "~/Movies/TV")
+        quality = get("download", "quality", "1080p")
         for ep in episodes:
             try:
                 stream = self._load(
                     f"Resolving S{season:02d}E{ep:02d}…",
-                    self.registry.resolve, chosen.imdb_id, MediaType.TV, season, ep,
+                    self.registry.resolve,
+                    chosen.imdb_id,
+                    MediaType.TV,
+                    season,
+                    ep,
                 )
             except Exception as e:  # noqa: BLE001 - user-facing
-                self._resolution_failure(
-                    e, f"No stream S{season:02d}E{ep:02d}"
-                )
+                self._resolution_failure(e, f"No stream S{season:02d}E{ep:02d}")
                 continue
-            if stream.quality_choices:
-                height = resolution_height(stream.quality_choices[-1])
-            else:
-                height = 1080
             filename = episode_filename(chosen.title, season, ep)
             try:
                 path = self._load(
                     f"Downloading S{season:02d}E{ep:02d}…",
-                    download_stream, stream, out, None, filename,
-                    format_selector_for_height(height),
+                    download_stream,
+                    stream,
+                    out,
+                    quality,
+                    filename,
                 )
                 self._record_history(chosen, season, ep, stream)
                 Log.info(f"Saved: {path}")
@@ -447,11 +541,11 @@ class CineApp:
         if not entries:
             self._message("History", "Nothing watched yet.", "info")
             return
-        labels = [self._history_label(e) for e in entries]
+        labels = _unique_labels([self._history_label(e) for e in entries])
         pick = self._pick(labels, "History")
         if pick is None:
             return
-        i = next((n for n, lbl in enumerate(labels) if lbl == pick), 0)
+        i = labels.index(pick)
         result = self._entry_to_result(entries[i])
         if result is not None:
             self._handle_result(result, intent="play")
@@ -459,17 +553,13 @@ class CineApp:
     def favorites_menu(self) -> None:
         entries = self.favorites.list()
         if not entries:
-            self._message(
-                "Favorites", "No favorites yet (press F while browsing).", "info"
-            )
+            self._message("Favorites", "No favorites yet (press F while browsing).", "info")
             return
-        labels = [
-            f"{e.get('title', e.get('imdb_id'))} ({e.get('year')})" for e in entries
-        ]
+        labels = _unique_labels([_favorite_label(e) for e in entries])
         pick = self._pick(labels, "Favorites")
         if pick is None:
             return
-        i = next((n for n, lbl in enumerate(labels) if lbl == pick), 0)
+        i = labels.index(pick)
         result = self.favorites.to_search_result(entries[i])
         if result is not None:
             self._handle_result(result, intent="play")
@@ -482,6 +572,9 @@ class CineApp:
             pick = self.ui.settings_menu(all_settings())
             if pick is None:
                 return
+            if pick == -1:
+                self._goodbye()
+                raise SystemExit(0)
             editor.edit(pick)
 
     def _hard_download(self, chosen: SearchResult, quality: str) -> None:
@@ -503,7 +596,7 @@ class CineApp:
                 return
             seasons = sorted(eps_map.keys(), key=lambda s: int(s) if str(s).isdigit() else 0)
             season = int(seasons[0]) if seasons else 1
-            if len(seasons) > 1 and self._interactive:
+            if len(seasons) > 1:
                 pick = self._pick([f"Season {s}" for s in seasons], f"{chosen.title} — Season")
                 if pick is None:
                     return
@@ -520,8 +613,11 @@ class CineApp:
                 )
                 if choice is None or choice.action == "back":
                     return
+                if choice.action == "quit":
+                    self._goodbye()
+                    raise SystemExit(0)
                 if choice.marked:
-                    targets = list(choice.marked)
+                    targets = self._marked_episode_numbers(episodes, choice.marked)
                 else:
                     targets = [episodes[choice.index]]
             else:
@@ -576,7 +672,10 @@ class CineApp:
     def _pick(self, items: list[str], title: str) -> str | None:
         if self._interactive:
             idx = self.ui.generic_menu(items, title)
-            if idx is None or idx == -1:
+            if idx == -1:
+                self._goodbye()
+                raise SystemExit(0)
+            if idx is None:
                 return None
             return items[idx]
         return self._fallback_numbered(items, title)
@@ -598,16 +697,18 @@ class CineApp:
 
     def _record_history(self, chosen: SearchResult, season, episode, stream: StreamInfo) -> None:
         is_tv = chosen.media_type is MediaType.TV
-        self.history.add({
-            "imdb_id": chosen.imdb_id,
-            "title": stream.title or chosen.title,
-            "year": chosen.year,
-            "media_type": chosen.media_type.value,
-            "image_url": chosen.image_url,
-            "cast": chosen.cast,
-            "season": season if is_tv else None,
-            "episode": episode if is_tv else None,
-        })
+        self.history.add(
+            {
+                "imdb_id": chosen.imdb_id,
+                "title": stream.title or chosen.title,
+                "year": chosen.year,
+                "media_type": chosen.media_type.value,
+                "image_url": chosen.image_url,
+                "cast": chosen.cast,
+                "season": season if is_tv else None,
+                "episode": episode if is_tv else None,
+            }
+        )
 
     def _entry_to_result(self, entry: dict) -> SearchResult | None:
         try:
@@ -637,9 +738,11 @@ class CineApp:
           - ``yifysubtitles``: always query YIFYS by IMDb ID (movies only);
           - ``subsource``: always query SubSource by title (+ season/episode
             for episodes);
-          - ``auto`` (default): provider tracks when available, otherwise
-            YIFYS for movies and SubSource for episodes, falling back to the
-            other when the primary has nothing.
+          - ``opensubtitles``: always query OpenSubtitles by IMDb ID (+
+            season/episode), requires an API key and account credentials;
+          - ``auto`` (default): merge tracks from every enabled source —
+            the provider's own ones plus YIFYS/SubSource and OpenSubtitles
+            (when its credentials are set) — and list them all in the picker.
 
         Every language in ``[subtitle] languages`` (defaults: English +
         Arabic) is searched, with ``default_lang`` taking priority for the
@@ -657,19 +760,35 @@ class CineApp:
         tracks = list(stream.subtitles or [])
         use_yify = source in ("auto", "yifysubtitles")
         use_subsource = source in ("auto", "subsource")
-        if self._interactive:
-            if season is None:
-                if use_yify and not tracks:
-                    tracks += fetch_yify(chosen.imdb_id, langs)
-                if use_subsource and not tracks:
-                    tracks += fetch_subsource(
-                        chosen.title, langs, year=chosen.year
-                    )
-            elif use_subsource and not tracks:
-                # YIFYS does not index TV series; SubSource is per-episode.
-                tracks += fetch_subsource(
-                    chosen.title, langs, season=season, episode=episode
-                )
+        use_opensubtitles = (
+            bool(get("opensubtitles", "enabled", True))
+            and bool(get("opensubtitles", "api_key", "").strip())
+            and bool(get("opensubtitles", "username", "").strip())
+            and bool(get("opensubtitles", "password", ""))
+            and source in ("auto", "opensubtitles")
+        )
+        hits: list[SubtitleTrack] = []
+        if season is None:
+            # YIFYS only indexes movies.
+            if use_yify:
+                hits += fetch_yify(chosen.imdb_id, langs)
+            if use_subsource:
+                hits += fetch_subsource(chosen.title, langs, year=chosen.year)
+        else:
+            # OpenSubtitles first: per-episode and correct where present.
+            if use_opensubtitles:
+                hits += fetch_opensubtitles(chosen.imdb_id, langs, season=season, episode=episode)
+            if use_subsource:
+                hits += fetch_subsource(chosen.title, langs, season=season, episode=episode)
+        if use_opensubtitles and season is None:
+            hits += fetch_opensubtitles(chosen.imdb_id, langs)
+        # Merge every enabled source and drop duplicates (provider tracks
+        # keep precedence, so identical URLs from external sources vanish).
+        seen = {(t.code, t.url) for t in tracks}
+        for t in hits:
+            if (t.code, t.url) not in seen:
+                tracks.append(t)
+                seen.add((t.code, t.url))
         if not tracks:
             return None
         if not self._interactive or get("subtitle", "auto_download", False) or len(tracks) == 1:
@@ -679,29 +798,28 @@ class CineApp:
                 track = self.ui.subtitle_menu(tracks, f"Subtitles for '{chosen.title}'")
             except (KeyboardInterrupt, EOFError):
                 return None
+        if track is UI_QUIT:
+            self._goodbye()
+            raise SystemExit(0)
         if track is None:
             return None
-        dest = f"/tmp/{chosen.imdb_id}"
+        safe_id = sanitize_filename(chosen.imdb_id).replace("..", "") or "subs"
+        dest = str(cache_dir() / "subtitles" / safe_id)
         if season is not None:
             dest += f"/s{season:02d}e{episode:02d}"
-        try:
-            # Some entries can be broken/empty; retry with the next best
-            # candidates until a real subtitle file lands.
-            candidates = [
-                candidate
-                for candidate in tracks
-                if candidate is not track
-            ]
-            candidates.insert(0, track)
-            for candidate in candidates[:5]:
+        # Some entries can be broken/empty; retry with the next best
+        # candidates until a real subtitle file lands.
+        candidates = [candidate for candidate in tracks if candidate is not track]
+        candidates.insert(0, track)
+        for candidate in candidates[:5]:
+            try:
                 path = download_subtitle(candidate, dest)
-                if not path:
-                    continue
+            except Exception as e:  # noqa: BLE001 - subtitles are optional
+                Log.debug(f"Subtitle candidate skipped: {e}")
+                continue
+            if path:
                 return str(path)
-            return None
-        except Exception as e:  # noqa: BLE001 - subtitles are optional
-            Log.debug(f"Subtitle fetch skipped: {e}")
-            return None
+        return None
 
     def _goodbye(self) -> None:
         self.ui.clear()
@@ -713,6 +831,7 @@ class CineApp:
 
 
 @click.group(invoke_without_command=True)
+@click.version_option(package_name="cinebox")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 @click.pass_context
 def main(ctx: click.Context, verbose: bool) -> None:
@@ -726,7 +845,9 @@ def main(ctx: click.Context, verbose: bool) -> None:
 @main.command()
 @click.argument("query")
 @click.option(
-    "--type", "-t", "media_type",
+    "--type",
+    "-t",
+    "media_type",
     type=click.Choice(["movie", "tv", "both"]),
     default="both",
 )
@@ -744,16 +865,17 @@ def play_cmd(imdb_id: str, media_type: str, season: int | None, episode: int | N
     """Stream a title directly by IMDb ID."""
     app = CineApp()
     mtype = MediaType.MOVIE if media_type == "movie" else MediaType.TV
-    result = app._entry_to_result(
-        {"imdb_id": imdb_id, "title": imdb_id, "media_type": mtype.value}
-    )
+    result = app._entry_to_result({"imdb_id": imdb_id, "title": imdb_id, "media_type": mtype.value})
     if result is None:
         click.echo("Invalid IMDb ID.", err=True)
         return
-    if mtype == MediaType.TV and season is None and episode is None:
-        app._tv_flow(result)
-        return
-    if mtype == MediaType.TV and season is not None and episode is not None:
+    if mtype == MediaType.TV:
+        if season is None and episode is None:
+            app._tv_flow(result)
+            return
+        if season is None or episode is None:
+            click.echo("TV playback requires both --season and --episode.", err=True)
+            return
         app._play_watched_episode(result, season, episode)
         return
     app._movie_flow(result, "play")
@@ -762,12 +884,15 @@ def play_cmd(imdb_id: str, media_type: str, season: int | None, episode: int | N
 @main.command("download")
 @click.argument("query")
 @click.option(
-    "--quality", "-q",
+    "--quality",
+    "-q",
     type=click.Choice(["480p", "720p", "1080p", "best"]),
     default=None,
 )
 @click.option(
-    "--type", "-t", "media_type",
+    "--type",
+    "-t",
+    "media_type",
     type=click.Choice(["movie", "tv", "both"]),
     default="both",
 )
@@ -793,6 +918,9 @@ def download_cmd(query: str, quality: str | None, media_type: str) -> None:
             return
         if sel is None:
             return
+        if sel == -1:
+            app._goodbye()
+            raise SystemExit(0)
         chosen = results[sel]
     else:
         pick = app._fallback_numbered([r.label for r in results], f"Pick a match for '{query}'")

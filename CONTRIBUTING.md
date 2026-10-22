@@ -13,8 +13,8 @@ uv sync --group dev
 ## Development loop
 
 ```bash
-uv run pytest                 # entire hermetic suite (no network)
-uv run ruff check src tests   # lint
+uv run pytest --cov=src/cinebox   # hermetic suite + coverage (no network)
+uv run ruff check src tests       # lint
 uv run ruff format --check src tests
 ```
 
@@ -34,8 +34,9 @@ never hits the network, so it stays fast and reproducible.
 - Keep new features off the critical import path (lazy imports where heavy).
 - New config knobs get a default in `src/cinebox/config.py` and row in
   `src/cinebox/settings.py`.
-- Never hard-code API keys or scrape private/authenticated endpoints —
-  the project is API-key-free by design.
+- Never hard-code API keys or scrape private/authenticated endpoints.
+  Streaming providers are keyless; OpenSubtitles is optional and reads its
+  API key and account credentials from config or the settings TUI.
 
 ## Reporting issues
 

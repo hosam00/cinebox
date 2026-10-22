@@ -8,13 +8,13 @@ gracefully to an empty Metadata so the TUI never crashes.
 
 from __future__ import annotations
 
-import functools
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import cache_dir
+from .config import cache_dir, get
 from .utils import Log, new_http_client
 
 IMDB_TITLE_URL = "https://www.imdb.com/title/{imdb_id}/"
@@ -30,7 +30,7 @@ class Metadata:
 
     @property
     def is_empty(self) -> bool:
-        return not (self.rating or self.genres or self.runtime or self.plot)
+        return not (self.rating or self.genres or self.runtime or self.plot or self.directors)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -40,19 +40,47 @@ def _cache_file(imdb_id: str) -> Path:
     return cache_dir() / f"meta_{imdb_id}.json"
 
 
+def _cache_ttl_seconds() -> float:
+    try:
+        hours = float(get("cache", "ttl_hours", 24))
+    except (TypeError, ValueError):
+        hours = 24.0
+    return max(0.0, hours) * 3600
+
+
+def _cache_enabled() -> bool:
+    return bool(get("cache", "enabled", True))
+
+
 def _from_cache(imdb_id: str) -> Metadata | None:
+    if not _cache_enabled():
+        return None
     path = _cache_file(imdb_id)
     if not path.exists():
         return None
     try:
-        return Metadata(**json.loads(path.read_text()))
-    except (json.JSONDecodeError, TypeError, OSError):
+        raw = json.loads(path.read_text())
+        if isinstance(raw, dict) and "meta" in raw:
+            fetched_at = float(raw.get("fetched_at", 0))
+            if time.time() - fetched_at > _cache_ttl_seconds():
+                return None
+            raw = raw["meta"]
+        elif time.time() - path.stat().st_mtime > _cache_ttl_seconds():
+            # Backwards compatibility for flat cache files written before
+            # the TTL wrapper existed.
+            return None
+        return Metadata(**raw)
+    except (json.JSONDecodeError, TypeError, ValueError, OSError):
         return None
 
 
 def _to_cache(imdb_id: str, meta: Metadata) -> None:
+    if not _cache_enabled() or meta.is_empty:
+        return
     try:
-        _cache_file(imdb_id).write_text(json.dumps(meta.as_dict()))
+        _cache_file(imdb_id).write_text(
+            json.dumps({"fetched_at": time.time(), "meta": meta.as_dict()})
+        )
     except OSError:
         pass
 
@@ -85,7 +113,7 @@ def _parse_iso_runtime(iso: str) -> str:
 def fetch_metadata(imdb_id: str) -> Metadata:
     """Fetch (or load cached) metadata for an IMDb title."""
     cached = _from_cache(imdb_id)
-    if cached is not None:
+    if cached is not None and not cached.is_empty:
         return cached
 
     meta = Metadata()
@@ -116,7 +144,11 @@ def fetch_metadata(imdb_id: str) -> Metadata:
     return meta
 
 
-@functools.lru_cache(maxsize=128)
 def fetch_metadata_cached(imdb_id: str) -> Metadata:
-    """Thread-safe cached wrapper used by the interactive results menu."""
+    """Return metadata from the TTL-aware on-disk cache (or fetch it).
+
+    This intentionally has no process-lifetime ``lru_cache``: failures and
+    empty results must be retryable, and cache expiry must be observable
+    within a single long-running TUI session.
+    """
     return fetch_metadata(imdb_id)

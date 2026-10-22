@@ -4,10 +4,13 @@ The resolution chain:
   1. imdb.su/embed/{type}/{id} redirects to player.imdb.su, whose page
      hosts an iframe to a rotating player domain (currently
      nextgencloudfabric.com).
-  2. That player page calls:
-       GET https://streamdata.vaplayer.ru/api.php?imdb={id}&type={type}[&s][&e]
-     requiring Referer/Origin headers that point at the player domain.
-  3. The API returns a JSON body with a stream_urls[] array of HLS URLs.
+2. That player page calls:
+        GET https://streamdata.vaplayer.ru/api.php?imdb={id}&type={type}[&season][&episode]
+      requiring Referer/Origin headers that point at the player domain.
+   3. The API returns a JSON body with a stream_urls[] array of HLS URLs.
+
+The API accepts ``season``/``episode`` (not ``s``/``e``) to pick a specific
+episode; each episode resolves to its own CDN host.
 
 The API call works with plain HTTP + header spoofing; no Turnstile or
 Playwright needed for this endpoint today.
@@ -65,9 +68,9 @@ def fetch_stream_api(
     host = host or EMBED_HOST
     params: list[str] = [f"imdb={imdb_id}", f"type={media_type.value}"]
     if season is not None:
-        params.append(f"s={season}")
+        params.append(f"season={season}")
     if episode is not None:
-        params.append(f"e={episode}")
+        params.append(f"episode={episode}")
     query = "&".join(params)
 
     embed_path = f"/embed/{media_type.value}/{imdb_id}"
@@ -82,14 +85,11 @@ def fetch_stream_api(
     Log.debug(f"Referer: {embed_url}")
 
     def _do() -> dict:
-        with new_http_client(
-            headers={"Referer": embed_url, "Origin": f"https://{host}"}
-        ) as client:
+        with new_http_client(headers={"Referer": embed_url, "Origin": f"https://{host}"}) as client:
             resp = client.get(url)
             if resp.status_code == 404:
                 raise ImdbSuError(
-                    f"Stream API returned 404 (imdb={imdb_id}). "
-                    "Title may be unavailable."
+                    f"Stream API returned 404 (imdb={imdb_id}). Title may be unavailable."
                 )
             resp.raise_for_status()
             data = resp.json()
@@ -108,7 +108,7 @@ def _parse_quality_variants(master_url: str, host: str) -> list[dict]:
     try:
         with new_http_client(
             timeout=5.0,
-            headers={"Referer": f"https://{host}/embed/movie/", "Origin": f"https://{host}"}
+            headers={"Referer": f"https://{host}/embed/movie/", "Origin": f"https://{host}"},
         ) as client:
             resp = client.get(master_url)
             resp.raise_for_status()
@@ -123,7 +123,9 @@ def _parse_quality_variants(master_url: str, host: str) -> list[dict]:
                         }
                     )
     except Exception as e:  # noqa: BLE001
-        Log.debug(f"Could not parse quality variants from {master_url}: {e}")
+        parsed = urlparse(master_url)
+        safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        Log.debug(f"Could not parse quality variants from {safe_url}: {type(e).__name__}")
     return variants
 
 
@@ -138,10 +140,27 @@ class ImdbSuProvider(BaseProvider):
         season: int | None = None,
         episode: int | None = None,
     ) -> StreamInfo:
+        if (season is None) != (episode is None):
+            raise ImdbSuError("season and episode must be supplied together.")
         host = _discover_player_host()
         data = fetch_stream_api(imdb_id, media_type, season, episode, host=host)
 
         info = data.get("data", {})
+
+        if season is not None and episode is not None:
+            served_episode = str(info.get("episode", "")).strip()
+            served_season = str(info.get("season", "")).strip()
+            if served_season and served_season != str(season):
+                raise ImdbSuError(
+                    f"Server returned season {served_season} instead of requested "
+                    f"S{season:02d}E{episode:02d}; this episode may be unavailable."
+                )
+            if served_episode and served_episode != str(episode):
+                raise ImdbSuError(
+                    f"Server returned episode {served_episode} instead of requested "
+                    f"S{season:02d}E{episode:02d}; this episode may be unavailable."
+                )
+
         stream_urls = info.get("stream_urls") or []
         if not stream_urls:
             raise ImdbSuError("API returned no stream URLs.")

@@ -22,7 +22,6 @@ from ..models import MediaType, StreamInfo
 from ..utils import Log, ProviderError, new_http_client, retry
 from .base import BaseProvider
 
-VIDSRC_BASE = "https://vidsrc.to"
 VSTEMBED_BASE = "https://vsembed.ru"
 META_API = "https://data.vidsrcme.ru/api.php"
 
@@ -45,16 +44,31 @@ def _fetch(host: str, url: str, referer: str, origin: str = "") -> str:
         return resp.text
 
 
-def _vs_src(media_type: MediaType, imdb_id: str) -> str:
+def _episode_query(media_type: MediaType, season: int | None, episode: int | None) -> str:
+    if media_type != MediaType.TV or season is None:
+        return ""
+    return f"&season={season}&episode={episode or 1}"
+
+
+def _vs_src(
+    media_type: MediaType,
+    imdb_id: str,
+    season: int | None = None,
+    episode: int | None = None,
+) -> str:
     """Fetch the cloudorchestranova embed URL from vsembed's src API."""
-    url = f"{VSTEMBED_BASE}/vs_src.php?type={media_type.value}&id={imdb_id}"
+    query = _episode_query(media_type, season, episode)
+    url = f"{VSTEMBED_BASE}/vs_src.php?type={media_type.value}&id={imdb_id}{query}"
+    embed_url = f"{VSTEMBED_BASE}/embed/{media_type.value}/{imdb_id}/"
+    if media_type == MediaType.TV and season is not None:
+        embed_url += f"{season}/{episode or 1}/"
     Log.debug(f"GET {url}")
 
     def _do() -> str:
         body = _fetch(
             VSTEMBED_BASE,
             url,
-            referer=f"{VSTEMBED_BASE}/embed/{media_type.value}/{imdb_id}/",
+            referer=embed_url,
             origin=VSTEMBED_BASE,
         )
         try:
@@ -66,10 +80,15 @@ def _vs_src(media_type: MediaType, imdb_id: str) -> str:
 
 
 def _meta_api(
-    media_type: MediaType, imdb_id: str, embed_host: str
+    media_type: MediaType,
+    imdb_id: str,
+    embed_host: str,
+    season: int | None = None,
+    episode: int | None = None,
 ) -> dict:
     """Call the vidsrcme metadata API. stream_urls may be array or encrypted."""
-    url = f"{META_API}?type={media_type.value}&imdb={imdb_id}&stream_urls"
+    query = _episode_query(media_type, season, episode)
+    url = f"{META_API}?type={media_type.value}&imdb={imdb_id}&stream_urls{query}"
     headers = {"Referer": f"https://{embed_host}/"}
 
     def _do() -> dict:
@@ -94,13 +113,13 @@ class VidSrcProvider(BaseProvider):
         season: int | None = None,
         episode: int | None = None,
     ) -> StreamInfo:
-        src = _vs_src(media_type, imdb_id)
+        src = _vs_src(media_type, imdb_id, season, episode)
         parsed = re.match(r"https://([^/]+)/embed/", src)
         if not parsed:
             raise VidSrcError(f"Unexpected embed URL: {src[:80]}")
         embed_host = parsed.group(1)
 
-        data = _meta_api(media_type, imdb_id, embed_host) or {}
+        data = _meta_api(media_type, imdb_id, embed_host, season, episode) or {}
         payload = data.get("data") or {}
         stream_urls = payload.get("stream_urls")
 

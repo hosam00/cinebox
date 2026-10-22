@@ -1,7 +1,5 @@
 """Unit tests for metadata enrichment helpers."""
 
-
-
 from cinebox.metadata import (
     Metadata,
     _from_cache,
@@ -33,7 +31,7 @@ class TestParseJsonLd:
             '<html><script type="application/ld+json">'
             '{"@type":"Movie","aggregateRating":{"ratingValue":8.9,"ratingCount":500},'
             '"genre":["Action"],"duration":"PT2H19M"}'
-            '</script></html>'
+            "</script></html>"
         )
         data = _parse_json_ld(page)
         assert data is not None
@@ -78,15 +76,22 @@ class TestFetchMetadata:
                 '{"aggregateRating":{"ratingValue":8.9,"ratingCount":500},'
                 '"genre":["Action","Sci-Fi"],"duration":"PT2H19M",'
                 '"description":"A great movie","director":[{"name":"Wachowski"}]}'
-                '</script>'
+                "</script>"
             )
             status_code = 200
-            def raise_for_status(self): pass
+
+            def raise_for_status(self):
+                pass
 
         class FakeClient:
-            def get(self, url, **kw): return FakeResponse()
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def get(self, url, **kw):
+                return FakeResponse()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
 
         monkeypatch.setattr(mod, "new_http_client", lambda **kw: FakeClient())
         meta = fetch_metadata("tt123")
@@ -105,3 +110,42 @@ class TestFetchMetadata:
         monkeypatch.setattr(mod, "new_http_client", boom)
         meta = fetch_metadata("ttFAIL")
         assert meta.is_empty
+
+
+def test_empty_metadata_is_not_cached(tmp_path, monkeypatch):
+    import cinebox.metadata as mod
+
+    monkeypatch.setattr(mod, "cache_dir", lambda: tmp_path)
+    _to_cache("ttEMPTY", Metadata())
+    assert not (tmp_path / "meta_ttEMPTY.json").exists()
+
+
+def test_expired_cache_is_ignored(tmp_path, monkeypatch):
+    import json
+    import time
+
+    import cinebox.metadata as mod
+
+    monkeypatch.setattr(mod, "cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod, "_cache_ttl_seconds", lambda: 10)
+    path = tmp_path / "meta_ttOLD.json"
+    path.write_text(
+        json.dumps({"fetched_at": time.time() - 11, "meta": {"runtime": "2h"}}),
+        encoding="utf-8",
+    )
+    assert _from_cache("ttOLD") is None
+
+
+def test_cache_disabled_skips_read_and_write(tmp_path, monkeypatch):
+    import cinebox.metadata as mod
+
+    monkeypatch.setattr(mod, "cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod, "_cache_enabled", lambda: False)
+    meta = Metadata(runtime="2h")
+    _to_cache("ttOFF", meta)
+    assert not (tmp_path / "meta_ttOFF.json").exists()
+    assert _from_cache("ttOFF") is None
+
+
+def test_director_only_metadata_is_not_empty():
+    assert not Metadata(directors="Wachowski").is_empty

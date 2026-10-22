@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.text import Text
 
-from .themes import COLOR_ASCII, COLOR_TITLE
+from . import themes
 
 HEADER_ART = r"""
   ▄████████ ▄█   ▄█▄    ▄████████    ▄████████ ▄██████▄     ▄████████ ███▄▄▄▄
@@ -53,8 +53,11 @@ def get_header_renderable() -> Text:
         body = HEADER_ART.rstrip()
     else:
         body = COMPACT_HEADER.rstrip()
-    return Text.from_markup(f"[bold {COLOR_ASCII}]{body}[/]", justify="center")
+    return Text.from_markup(f"[bold {themes.COLOR_ASCII}]{body}[/]", justify="center")
 
 
 def get_goodbye_renderable() -> Text:
-    return Text.from_markup(f"[bold {COLOR_TITLE}]{GOODBYE_ART.rstrip()}[/]", justify="center")
+    return Text.from_markup(
+        f"[bold {themes.COLOR_TITLE}]{GOODBYE_ART.rstrip()}[/]",
+        justify="center",
+    )

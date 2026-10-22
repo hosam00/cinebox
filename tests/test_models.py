@@ -1,5 +1,7 @@
 """Unit tests for cinebox models."""
 
+import pytest
+
 from cinebox.models import MediaType, SearchResult, StreamInfo, _classify_media
 
 
@@ -53,7 +55,9 @@ def test_label_format():
 
 
 def test_stream_info_headers_inject_referer():
-    s = StreamInfo(url="https://cdn/x/master.m3u8", provider="imdb_su", referer="https://player/embed")
+    s = StreamInfo(
+        url="https://cdn/x/master.m3u8", provider="imdb_su", referer="https://player/embed"
+    )
     h = s.get_headers()
     assert h["Referer"] == "https://player/embed"
     s2 = StreamInfo(
@@ -63,3 +67,19 @@ def test_stream_info_headers_inject_referer():
         referer="other",
     )
     assert s2.get_headers()["Referer"] == "custom"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        None,
+        [],
+        "not-a-dict",
+        {"id": None, "l": "Missing ID", "q": "movie"},
+        {"id": "tt1234567", "l": None, "q": "movie"},
+        {"id": "bad-id", "l": "Bad ID", "q": "movie"},
+        {"id": "tt1234567", "l": "Bad types", "q": 42, "qid": []},
+    ],
+)
+def test_from_imdb_suggestion_skips_malformed_entries(entry):
+    assert SearchResult.from_imdb_suggestion(entry) is None

@@ -30,10 +30,19 @@ class SearchResult(BaseModel):
         return f"[{type_tag}] {self.title}{year} — {self.imdb_id}"
 
     @classmethod
-    def from_imdb_suggestion(cls, entry: dict) -> SearchResult | None:
+    def from_imdb_suggestion(cls, entry: object) -> SearchResult | None:
         """Parse a raw IMDb suggestion JSON entry into a SearchResult."""
+        if not isinstance(entry, dict):
+            return None
         media_type = _classify_media(entry)
         if media_type is None:
+            return None
+
+        imdb_id = entry.get("id")
+        title = entry.get("l")
+        if not isinstance(imdb_id, str) or not imdb_id.strip():
+            return None
+        if not isinstance(title, str) or not title.strip():
             return None
 
         year = entry.get("y") or entry.get("tl")
@@ -43,24 +52,35 @@ class SearchResult(BaseModel):
             year = None
 
         image = ""
-        image_info = entry.get("i") or {}
+        image_info = entry.get("i")
         if isinstance(image_info, dict):
-            image = image_info.get("imageUrl", "")
+            image = image_info.get("imageUrl")
+            if not isinstance(image, str):
+                image = ""
 
-        return cls(
-            imdb_id=entry.get("id", ""),
-            title=entry.get("l", ""),
-            year=year,
-            media_type=media_type,
-            cast=entry.get("s", ""),
-            image_url=image,
-        )
+        cast = entry.get("s")
+        if not isinstance(cast, str):
+            cast = ""
+
+        try:
+            return cls(
+                imdb_id=imdb_id.strip(),
+                title=title.strip(),
+                year=year,
+                media_type=media_type,
+                cast=cast,
+                image_url=image,
+            )
+        except ValueError:
+            return None
 
 
 def _classify_media(entry: dict) -> MediaType | None:
     """Map IMDb suggestion q/qid fields to a MediaType, or None to skip."""
-    q = (entry.get("q") or "").lower()
-    qid = (entry.get("qid") or "").lower()
+    q = entry.get("q") if isinstance(entry.get("q"), str) else ""
+    qid = entry.get("qid") if isinstance(entry.get("qid"), str) else ""
+    q = q.lower()
+    qid = qid.lower()
     raw = f"{q} {qid}"
 
     movies = {"feature", "movie", "film", "short", "video"}
@@ -80,11 +100,6 @@ def _classify_media(entry: dict) -> MediaType | None:
     if "movie" in raw or "video" in raw:
         return MediaType.MOVIE
     return None
-
-
-class Episode(BaseModel):
-    number: int
-    title: str = ""
 
 
 class SubtitleTrack(BaseModel):

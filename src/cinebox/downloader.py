@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import get
 from .models import StreamInfo
-from .utils import Log, ensure_command, sanitize_filename
+from .utils import Log, ensure_command, sanitize_filename, validate_stream_url
 
 
 def _which_ytdlp() -> str:
@@ -24,12 +24,15 @@ def download_stream(
     format_selector: str | None = None,
 ) -> Path:
     """Download a stream to output_dir. Returns the resulting file path."""
+    url = validate_stream_url(stream.url)
     ytdlp = _which_ytdlp()
     output_dir_path = Path(os.path.expanduser(output_dir))
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
     base = filename or sanitize_filename(stream.title or "download")
-    outtmpl = str(output_dir_path / f"{base}.%(ext)s")
+    # Escape literal % so yt-dlp does not parse it as a template field.
+    template_base = base.replace("%", "%%")
+    outtmpl = str(output_dir_path / f"{template_base}.%(ext)s")
 
     if format_selector is None:
         fmt = _format_selector(quality)
@@ -41,7 +44,6 @@ def download_stream(
         fmt,
         "--no-continue",
         "--no-playlist",
-        "--restrict-filenames",
         "--output",
         outtmpl,
     ]
@@ -59,15 +61,30 @@ def download_stream(
     fragments = max(1, min(16, fragments))
     if fragments > 1:
         cmd += ["--concurrent-fragments", str(fragments)]
-    cmd.append(stream.url)
+    cmd += ["--", url]
 
-    Log.debug(f"Exec {' '.join(cmd)}")
-    proc = subprocess.run(cmd)
+    Log.debug(f"Running yt-dlp for {stream.provider or 'stream'}.")
+    # Capture output: yt-dlp's progress bars would otherwise write into the
+    # Rich Live screen and corrupt the TUI. Keep a short tail for failures.
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"yt-dlp exited with code {proc.returncode}.")
+        detail = (proc.stderr or proc.stdout or "").strip()
+        if detail:
+            detail = detail[-800:]
+        raise RuntimeError(
+            f"yt-dlp exited with code {proc.returncode}." + (f" {detail}" if detail else "")
+        )
 
     # Find the resulting file (yt-dlp may remux to mkv/mp4/webm).
-    candidates = sorted(output_dir_path.glob(f"{base}.*"))
+    # Do not use glob: titles can contain glob metacharacters such as [ ].
+    prefix = f"{base}."
+    candidates = sorted(
+        path
+        for path in output_dir_path.iterdir()
+        if path.is_file()
+        and path.name.startswith(prefix)
+        and not path.name.endswith((".part", ".ytdl", ".temp", ".json"))
+    )
     if not candidates:
         raise RuntimeError(f"Download finished but no file found in {output_dir_path}.")
     return candidates[0]

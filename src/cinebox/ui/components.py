@@ -24,8 +24,9 @@ from rich.text import Text
 
 from ..metadata import fetch_metadata_cached
 from ..models import SearchResult, SubtitleTrack
+from . import themes
 from .art import get_header_renderable
-from .poster import render_poster
+from .poster import configured_poster_scale, render_poster
 from .terminal import (
     RawTerminal,
     enter_raw_mode_after_input,
@@ -33,25 +34,18 @@ from .terminal import (
     get_key,
     restore_terminal_for_input,
 )
-from .themes import (
-    COLOR_BORDER,
-    COLOR_ERROR,
-    COLOR_LOADING_SPINNER,
-    COLOR_PRIMARY_TEXT,
-    COLOR_PROMPT,
-    COLOR_SECONDARY_TEXT,
-    COLOR_TITLE,
-    highlight_style,
-)
+
+# Sentinel returned by menus whose normal "skip/back" value is ``None``.
+QUIT = object()
 
 
 @dataclass
 class EpisodeChoice:
     """Result of the episode picker."""
 
-    action: str  # 'play' | 'download'
-    index: int | None
-    marked: tuple[int, ...] = ()
+    action: str  # 'play' | 'download' | 'back' | 'quit'
+    index: int | None  # highlighted episode's index in the list
+    marked: tuple[int, ...] = ()  # marked episode indices
 
 
 @dataclass
@@ -89,12 +83,12 @@ class UIManager:
         """True when the terminal is wide enough for the full-screen TUI."""
         return shutil.get_terminal_size().columns >= 80
 
-    def ask(self, prompt: str, default: str = "") -> str:
+    def ask(self, prompt: str, default: str = "", secret: bool = False) -> str:
         """Prompt for text input, restoring cooked mode if inside raw mode."""
         if RawTerminal._active_instance is not None:
             restore_terminal_for_input()
         try:
-            value = Prompt.ask(prompt, console=self.console)
+            value = Prompt.ask(prompt, console=self.console, password=secret)
             return value or default
         finally:
             enter_raw_mode_after_input()
@@ -117,13 +111,13 @@ class UIManager:
 
         threading.Thread(target=worker, daemon=True).start()
 
-        spinner = Spinner("dots", text=Text(f" {message}", style=COLOR_LOADING_SPINNER))
+        spinner = Spinner("dots", text=Text(f" {message}", style=themes.COLOR_LOADING_SPINNER))
         panel = Panel(
             Align.center(spinner, vertical="middle"),
             box=HEAVY,
-            border_style=COLOR_BORDER,
+            border_style=themes.COLOR_BORDER,
             padding=(2, 4),
-            title=Text("LOADING", style=COLOR_TITLE),
+            title=Text("LOADING", style=themes.COLOR_TITLE),
         )
         try:
             with Live(
@@ -148,19 +142,19 @@ class UIManager:
     def render_message(self, title: str, body: str, kind: str = "info") -> None:
         """Centered panel with a 'press any key' prompt."""
         if kind == "error":
-            color = COLOR_ERROR
+            color = themes.COLOR_ERROR
         elif kind == "success":
-            color = COLOR_TITLE
+            color = themes.COLOR_TITLE
         else:
-            color = COLOR_PROMPT
+            color = themes.COLOR_PROMPT
         icon = {"error": "✗", "success": "✓", "info": "•"}.get(kind, "•")
-        content = Text(f"{icon} {body}", style=COLOR_PRIMARY_TEXT)
+        content = Text(f"{icon} {body}", style=themes.COLOR_PRIMARY_TEXT)
         panel = Panel(
             Align.center(content, vertical="middle"),
             title=Text(f"{title}", style=f"bold {color}"),
             subtitle=Text("press any key", style="dim"),
             box=HEAVY,
-            border_style=COLOR_BORDER,
+            border_style=themes.COLOR_BORDER,
             padding=(2, 4),
         )
         self.clear()
@@ -189,15 +183,15 @@ class UIManager:
         """Centered red panel listing one failed provider per line."""
         content = Text()
         for err in provider_errors:
-            content.append("✗ ", style=COLOR_ERROR)
-            content.append(f"{err}\n", style=COLOR_PRIMARY_TEXT)
+            content.append("✗ ", style=themes.COLOR_ERROR)
+            content.append(f"{err}\n", style=themes.COLOR_PRIMARY_TEXT)
         content.append(f"— {hint}", style="dim")
         panel = Panel(
             Align.center(content, vertical="middle"),
-            title=Text(f"✗ {title}", style=f"bold {COLOR_ERROR}"),
+            title=Text(f"✗ {title}", style=f"bold {themes.COLOR_ERROR}"),
             subtitle=Text("press any key", style="dim"),
             box=HEAVY,
-            border_style=COLOR_ERROR,
+            border_style=themes.COLOR_ERROR,
             padding=(2, 4),
         )
         self.clear()
@@ -220,18 +214,18 @@ class UIManager:
     def now_playing(self, title: str, detail: str, quality: str) -> None:
         """Draw a 'Now Playing' panel while the player runs in its own window."""
         content = Text(justify="center")
-        content.append("▶ Now Playing\n\n", style=f"bold {COLOR_PROMPT}")
-        content.append(f"{title}\n", style=f"bold {COLOR_TITLE}")
+        content.append("▶ Now Playing\n\n", style=f"bold {themes.COLOR_PROMPT}")
+        content.append(f"{title}\n", style=f"bold {themes.COLOR_TITLE}")
         if detail:
-            content.append(f"{detail}\n", style=COLOR_PRIMARY_TEXT)
+            content.append(f"{detail}\n", style=themes.COLOR_PRIMARY_TEXT)
         if quality:
-            content.append(f"Quality: {quality}\n\n", style=COLOR_SECONDARY_TEXT)
+            content.append(f"Quality: {quality}\n\n", style=themes.COLOR_SECONDARY_TEXT)
         content.append("Close your player to return.", style="dim")
         panel = Panel(
             Align.center(content, vertical="middle"),
-            title=Text("NOW PLAYING", style=f"bold {COLOR_TITLE}"),
+            title=Text("NOW PLAYING", style=f"bold {themes.COLOR_TITLE}"),
             box=HEAVY,
-            border_style=COLOR_BORDER,
+            border_style=themes.COLOR_BORDER,
             padding=(2, 6),
         )
         self.clear()
@@ -242,7 +236,7 @@ class UIManager:
     def render_main_menu(self, lb: str, keybinds: str) -> str:
         """Render the home screen and return the raw query line (not raw mode)."""
         flush_stdin()
-        return self.ask(f"[{COLOR_PROMPT}]› [/]", default=lb)
+        return self.ask(f"[{themes.COLOR_PROMPT}]› [/]", default=lb)
 
     def show_banner(self, keybinds: str) -> None:
         self.clear()
@@ -252,9 +246,9 @@ class UIManager:
         self.print(Align.center(get_header_renderable()))
         self.print()
         panel = Panel(
-            Text(keybinds, style=COLOR_SECONDARY_TEXT, justify="center"),
+            Text(keybinds, style=themes.COLOR_SECONDARY_TEXT, justify="center"),
             box=HEAVY,
-            border_style=COLOR_BORDER,
+            border_style=themes.COLOR_BORDER,
         )
         self.print(Align.center(panel))
         self.print()
@@ -278,19 +272,19 @@ class UIManager:
             for idx in range(scroll_offset, min(scroll_offset + max_display, len(items))):
                 item = items[idx]
                 if idx == selected:
-                    content.append(f"▶ {item}\n", style=highlight_style())
+                    content.append(f"▶ {item}\n", style=themes.highlight_style())
                 else:
-                    content.append(f"  {item}\n", style=COLOR_PRIMARY_TEXT)
+                    content.append(f"  {item}\n", style=themes.COLOR_PRIMARY_TEXT)
             if len(items) > max_display:
-                content.append("\n  [dim]▾ scroll for more[/dim]")
+                content.append("\n  ▾ scroll for more", style="dim")
             return Panel(
                 content,
-                title=Text(title, style=COLOR_TITLE),
+                title=Text(title, style=themes.COLOR_TITLE),
                 box=HEAVY,
-                border_style=COLOR_BORDER,
+                border_style=themes.COLOR_BORDER,
                 subtitle=Text(
                     subtitle or "↑↓ Navigate | ENTER Select | b Back | q Quit",
-                    style=COLOR_SECONDARY_TEXT,
+                    style=themes.COLOR_SECONDARY_TEXT,
                 ),
                 padding=(1, 2),
             )
@@ -332,10 +326,10 @@ class UIManager:
         self,
         tracks: list[SubtitleTrack],
         title: str,
-    ) -> SubtitleTrack | None:
+    ) -> SubtitleTrack | object | None:
         """Pick a subtitle track from the ones the provider offers.
 
-        Returns the chosen track, or None to skip subtitles.
+        Returns the chosen track, ``QUIT`` on q, or None to skip subtitles.
         """
         labels = [t.label for t in tracks] + ["No subtitles"]
         try:
@@ -346,7 +340,9 @@ class UIManager:
             )
         except (KeyboardInterrupt, EOFError):
             return None
-        if idx is None or idx == -1 or idx >= len(tracks):
+        if idx == -1:
+            return QUIT
+        if idx is None or idx >= len(tracks):
             return None
         return tracks[idx]
 
@@ -365,7 +361,12 @@ class UIManager:
                 self._meta_cache[result.imdb_id] = meta
         except Exception:  # noqa: BLE001
             pass
-        render_poster(result.image_url, poster_height, poster_max_chars)
+        render_poster(
+            result.image_url,
+            poster_height,
+            poster_max_chars,
+            scale=configured_poster_scale(),
+        )
         with self._poster_lock:
             self._poster_ready[result.imdb_id] = True
 
@@ -417,16 +418,16 @@ class UIManager:
                 if r.year:
                     line += f" ({r.year})"
                 if idx == selected:
-                    content.append(f"▶ {line}\n", style=highlight_style())
+                    content.append(f"▶ {line}\n", style=themes.highlight_style())
                 else:
-                    content.append(f"  {line}\n", style=COLOR_PRIMARY_TEXT)
+                    content.append(f"  {line}\n", style=themes.COLOR_PRIMARY_TEXT)
             if len(results) > max_display:
-                content.append("\n[dim]▾ scroll for more[/dim]")
+                content.append("\n▾ scroll for more", style="dim")
             return Panel(
                 content,
-                title=Text(f"Results: {len(results)}", style=COLOR_TITLE),
+                title=Text(f"Results: {len(results)}", style=themes.COLOR_TITLE),
                 box=HEAVY,
-                border_style=COLOR_BORDER,
+                border_style=themes.COLOR_BORDER,
                 padding=(0, 1),
             )
 
@@ -438,34 +439,40 @@ class UIManager:
                 ready = self._poster_ready.get(result.imdb_id, False)
             if result.image_url:
                 if ready:
-                    poster = render_poster(result.image_url, poster_height, pane_inner)
+                    poster = render_poster(
+                        result.image_url,
+                        poster_height,
+                        pane_inner,
+                        scale=configured_poster_scale(),
+                    )
                 else:
                     poster = Text("Loading poster…", style="dim")
                 content.append(poster)
                 content.append("\n\n")
-            content.append(f"{result.title}", style=COLOR_TITLE)
+            content.append(f"{result.title}", style=themes.COLOR_TITLE)
             content.append("\n")
             desc = f"{result.media_type.value.upper()} • {result.year or 'year n/a'}"
-            content.append(f"{desc}", style=COLOR_SECONDARY_TEXT)
+            content.append(f"{desc}", style=themes.COLOR_SECONDARY_TEXT)
             if result.cast:
-                content.append(f"\nCast: [dim]{result.cast}[/dim]")
+                content.append("\nCast: ", style=themes.COLOR_SECONDARY_TEXT)
+                content.append(result.cast, style="dim")
             if meta is not None and not getattr(meta, "is_empty", False):
                 rating = meta.rating[0] if meta.rating else "N/A"
                 star = "⭐ " if meta.rating else ""
-                content.append(f"\n[bold #FFA500]{star}{rating}[/]")
+                content.append(f"\n{star}{rating}", style="bold #FFA500")
                 if meta.genres:
-                    content.append(f" · [dim]{', '.join(meta.genres[:3])}[/dim]")
+                    content.append(f" · {', '.join(meta.genres[:3])}", style="dim")
                 if meta.runtime:
                     content.append(f" · {meta.runtime}")
                 if meta.plot:
-                    content.append(f"\n[dim]{meta.plot}[/dim]")
+                    content.append(f"\n{meta.plot}", style="dim")
             if not result.image_url:
-                content.append("\n[dim]No poster available[/dim]")
+                content.append("\nNo poster available", style="dim")
             return Panel(
                 content,
-                title=Text("Details", style=COLOR_TITLE),
+                title=Text("Details", style=themes.COLOR_TITLE),
                 box=HEAVY,
-                border_style=COLOR_BORDER,
+                border_style=themes.COLOR_BORDER,
                 padding=(0, 1),
             )
 
@@ -478,10 +485,10 @@ class UIManager:
                     Text(
                         "↑↓ Navigate | ENTER Play (F=Favorite) | b Back | q Quit",
                         justify="center",
-                        style=COLOR_SECONDARY_TEXT,
+                        style=themes.COLOR_SECONDARY_TEXT,
                     ),
                     box=HEAVY,
-                    border_style=COLOR_BORDER,
+                    border_style=themes.COLOR_BORDER,
                 )
             )
             return layout
@@ -532,15 +539,18 @@ class UIManager:
             content = Text()
             for idx in range(scroll_offset, min(scroll_offset + max_display, len(qualities))):
                 if idx == selected:
-                    content.append(f"▶ {qualities[idx]}\n", style=highlight_style())
+                    content.append(f"▶ {qualities[idx]}\n", style=themes.highlight_style())
                 else:
-                    content.append(f"  {qualities[idx]}\n", style=COLOR_PRIMARY_TEXT)
+                    content.append(f"  {qualities[idx]}\n", style=themes.COLOR_PRIMARY_TEXT)
             return Panel(
                 content,
-                title=Text(title, style=COLOR_TITLE),
+                title=Text(title, style=themes.COLOR_TITLE),
                 box=HEAVY,
-                border_style=COLOR_BORDER,
-                subtitle=Text("ENTER Watch | D Download | b Back", style=COLOR_SECONDARY_TEXT),
+                border_style=themes.COLOR_BORDER,
+                subtitle=Text(
+                    "ENTER Watch | D Download | b Back",
+                    style=themes.COLOR_SECONDARY_TEXT,
+                ),
                 padding=(2, 4),
             )
 
@@ -585,7 +595,7 @@ class UIManager:
 
         ENTER plays the highlighted episode; SPACE toggles a mark;
         'd' downloads marked episodes (or highlights if none marked);
-        'b'/'q' go back.
+        ``b`` goes back; ``q`` quits the application.
         """
         selected = 0
         marked: set[int] = set()
@@ -599,15 +609,18 @@ class UIManager:
                 num = episodes[idx]
                 mark = "[*] " if idx in marked else "[ ] "
                 line = f"{mark}Episode {num}"
-                content.append(f"▶ {line}\n" if idx == selected else f"  {line}\n",
-                               style=highlight_style() if idx == selected else COLOR_PRIMARY_TEXT)
+                style = themes.highlight_style() if idx == selected else themes.COLOR_PRIMARY_TEXT
+                content.append(
+                    f"▶ {line}\n" if idx == selected else f"  {line}\n",
+                    style=style,
+                )
             tip = "↑↓ Navigate | ENTER Play | SPACE Mark | D Download | b Back | q Quit"
             return Panel(
                 content,
-                title=Text(title, style=COLOR_TITLE),
+                title=Text(title, style=themes.COLOR_TITLE),
                 box=HEAVY,
-                border_style=COLOR_BORDER,
-                subtitle=Text(subtitle or tip, style=COLOR_SECONDARY_TEXT),
+                border_style=themes.COLOR_BORDER,
+                subtitle=Text(subtitle or tip, style=themes.COLOR_SECONDARY_TEXT),
                 padding=(1, 2),
             )
 
@@ -647,7 +660,7 @@ class UIManager:
                             action="back", index=None, marked=tuple(sorted(marked))
                         )
                     elif key == "q":
-                        return None
+                        return EpisodeChoice(action="quit", index=None)
                     else:
                         continue
                     live.update(
@@ -670,16 +683,19 @@ class UIManager:
             content = Text()
             for idx, opt in enumerate(options):
                 if idx == selected:
-                    content.append(f"▶ {opt}\n", style=highlight_style())
+                    content.append(f"▶ {opt}\n", style=themes.highlight_style())
                 else:
-                    content.append(f"  {opt}\n", style=COLOR_PRIMARY_TEXT)
+                    content.append(f"  {opt}\n", style=themes.COLOR_PRIMARY_TEXT)
             return Panel(
                 Align.center(content, vertical="middle"),
-                title=Text("What next?", style=COLOR_TITLE),
+                title=Text("What next?", style=themes.COLOR_TITLE),
                 box=HEAVY,
                 padding=(1, 4),
-                border_style=COLOR_BORDER,
-                subtitle=Text("↑↓ Navigate | ENTER Select | q Quit", style=COLOR_SECONDARY_TEXT),
+                border_style=themes.COLOR_BORDER,
+                subtitle=Text(
+                    "↑↓ Navigate | ENTER Select | q Quit",
+                    style=themes.COLOR_SECONDARY_TEXT,
+                ),
             )
 
         self.clear()
@@ -699,7 +715,7 @@ class UIManager:
                     elif key == "ENTER":
                         return options[selected]
                     elif key == "q":
-                        return "Back to List"
+                        return "Quit"
                     else:
                         continue
                     live.update(
@@ -709,10 +725,16 @@ class UIManager:
 
     # -- settings menu --------------------------------------------------------
 
-    def settings_menu(self, settings: list[Setting]) -> str | None:
-        """Navigable settings rows. Returns the edit_id of the selected row."""
-        lines = [f"{s.label}   [dim]→ {s.value_text}[/dim]" for s in settings]
+    def settings_menu(self, settings: list[Setting]) -> str | int | None:
+        """Navigable settings rows.
+
+        Returns the edit_id of the selected row, ``None`` for Back, or ``-1``
+        when the user chose Quit.
+        """
+        lines = [f"{s.label}   → {s.value_text}" for s in settings]
         idx = self.generic_menu(lines, "Settings", subtitle="Select to edit | b Back | q Quit")
-        if idx is None or idx == -1:
+        if idx is None:
             return None
+        if idx == -1:
+            return -1
         return settings[idx].edit_id

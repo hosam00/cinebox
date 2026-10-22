@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 
+import cinebox.providers.vidsrc as vidsrc
 from cinebox.models import MediaType, SearchResult, StreamInfo
 from cinebox.providers import (
     ImdbSuProvider,
@@ -253,3 +256,122 @@ def test_search_result_accepts_synthetic_id() -> None:
 def test_search_result_rejects_unscoped_garbage() -> None:
     with pytest.raises(ValueError):
         SearchResult(imdb_id="garbage", title="x", media_type=MediaType.MOVIE)
+
+
+def test_vidsrc_propagates_tv_season_and_episode(monkeypatch) -> None:
+    calls = {}
+
+    def fake_src(media_type, imdb_id, season=None, episode=None):
+        calls["src"] = (media_type, imdb_id, season, episode)
+        return "https://embed.example/embed/tv/tt0903747/1/2"
+
+    def fake_meta(media_type, imdb_id, host, season=None, episode=None):
+        calls["meta"] = (media_type, imdb_id, host, season, episode)
+        return {"data": {"stream_urls": ["https://cdn.example/x.m3u8"]}}
+
+    monkeypatch.setattr(vidsrc, "_vs_src", fake_src)
+    monkeypatch.setattr(vidsrc, "_meta_api", fake_meta)
+
+    stream = VidSrcProvider().resolve("tt0903747", MediaType.TV, season=1, episode=2)
+
+    assert calls["src"] == (MediaType.TV, "tt0903747", 1, 2)
+    assert calls["meta"] == (MediaType.TV, "tt0903747", "embed.example", 1, 2)
+    assert stream.url == "https://cdn.example/x.m3u8"
+
+
+def test_vidsrc_src_url_includes_tv_episode(monkeypatch) -> None:
+    captured = {}
+
+    def fake_fetch(host, url, referer, origin=""):
+        captured.update(url=url, referer=referer, origin=origin)
+        return '{"src":"https://embed.example/embed/tv/tt0903747/1/2"}'
+
+    monkeypatch.setattr(vidsrc, "_fetch", fake_fetch)
+
+    src = vidsrc._vs_src(MediaType.TV, "tt0903747", season=1, episode=2)
+
+    assert src.endswith("/1/2")
+    assert "season=1" in captured["url"]
+    assert "episode=2" in captured["url"]
+    assert captured["referer"].endswith("/1/2/")
+
+
+def test_imdb_su_stream_api_tv_query_and_headers(monkeypatch) -> None:
+    from cinebox.providers import imdb_su
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"status_code": "200", "data": {}}
+
+    class FakeClient:
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, *args) -> bool:
+            return False
+
+        def get(self, url: str) -> FakeResponse:
+            captured["url"] = url
+            return FakeResponse()
+
+    def fake_client(*, headers=None, **kwargs):
+        captured["headers"] = headers
+        return FakeClient()
+
+    monkeypatch.setattr(imdb_su, "new_http_client", fake_client)
+
+    data = imdb_su.fetch_stream_api(
+        "tt0903747", MediaType.TV, season=1, episode=2, host="player.example"
+    )
+
+    assert data == {"status_code": "200", "data": {}}
+    query = parse_qs(urlparse(captured["url"]).query)
+    assert query == {
+        "imdb": ["tt0903747"],
+        "type": ["tv"],
+        "season": ["1"],
+        "episode": ["2"],
+    }
+    assert captured["headers"] == {
+        "Referer": "https://player.example/embed/tv/tt0903747/1/2",
+        "Origin": "https://player.example",
+    }
+
+
+def test_imdb_su_rejects_mismatched_season(monkeypatch) -> None:
+    from cinebox.providers import imdb_su
+
+    monkeypatch.setattr(imdb_su, "_discover_player_host", lambda: "player.example")
+    monkeypatch.setattr(
+        imdb_su,
+        "fetch_stream_api",
+        lambda *a, **k: {
+            "status_code": "200",
+            "data": {
+                "season": "2",
+                "episode": "1",
+                "stream_urls": ["https://cdn.example/x.m3u8"],
+            },
+        },
+    )
+    with pytest.raises(imdb_su.ImdbSuError, match="season 2"):
+        imdb_su.ImdbSuProvider().resolve("tt0903747", MediaType.TV, season=1, episode=1)
+
+
+def test_imdb_su_requires_season_and_episode_together(monkeypatch) -> None:
+    from cinebox.providers import imdb_su
+
+    monkeypatch.setattr(
+        imdb_su,
+        "fetch_stream_api",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")),
+    )
+    with pytest.raises(imdb_su.ImdbSuError, match="together"):
+        imdb_su.ImdbSuProvider().resolve("tt0903747", MediaType.TV, season=1)

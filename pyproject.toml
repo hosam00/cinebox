@@ -1,9 +1,10 @@
 [project]
 name = "cinebox"
-version = "0.1.0"
+version = "0.2.0"
 description = "Terminal tool to search, stream, and download movies & TV shows"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = [
     "movie",
@@ -21,7 +22,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -45,7 +45,6 @@ dependencies = [
 
 [project.optional-dependencies]
 discord = ["pypresence>=4.5"]
-posters = ["Pillow>=10.0", "numpy>=1.24"]
 
 [project.scripts]
 cinebox = "cinebox:main"
@@ -70,8 +69,16 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]
 
+[tool.coverage.run]
+source = ["src/cinebox"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "ruff>=0.16.7",
 ]

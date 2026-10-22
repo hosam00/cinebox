@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from cinebox.ui import poster
 from cinebox.ui.art import get_goodbye_renderable, get_header_renderable
 from cinebox.ui.components import EpisodeChoice, Setting
 from cinebox.ui.poster import _poster_pixel_dims, pixel_grid_to_ansi
@@ -105,3 +106,24 @@ def test_poster_pixel_dims_zero_source():
     w, h = _poster_pixel_dims(0, 0, 20, 1.0)
     assert w == 0
     assert h == 0
+
+
+def test_theme_reload_updates_art(monkeypatch, tmp_path):
+    from cinebox import config
+    from cinebox.ui import themes
+
+    monkeypatch.setenv("CINEBOX_CONFIG_DIR", str(tmp_path / "config"))
+    config.set_config("ui", "theme", "red")
+    themes.reload_theme()
+    try:
+        assert themes.COLOR_BORDER == themes.THEMES["red"]["border"]
+        text = get_header_renderable()
+        assert text.spans[0].style == f"bold {themes.THEMES['red']['ascii']}"
+    finally:
+        config.set_config("ui", "theme", "blue")
+        themes.reload_theme()
+
+
+def test_invalid_poster_scale_falls_back(monkeypatch):
+    monkeypatch.setattr(poster, "get", lambda *args: "not-a-number")
+    assert poster.configured_poster_scale() == 1.0

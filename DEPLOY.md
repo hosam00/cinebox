@@ -1,16 +1,16 @@
 # Deploying cinebox to PyPI
 
 Publishing uses **Trusted Publishing (OIDC)** — no API token is stored in
-GitHub. The `pypi` workflow signs in with a short-lived identity granted
-by a pending publisher you create in your PyPI account.
+GitHub. The `pypi` workflow signs in with a short-lived identity granted by a
+trusted publisher configured on PyPI.
 
-This must be done **once per project**; after that, releasing is just
-pushing a tag + creating a GitHub Release.
+This must be done **once per project**; after that, releasing is just pushing a
+tag and creating a GitHub Release.
 
 ## Prerequisites
 
 - A [PyPI account](https://pypi.org/account/register/) with a verified email.
-- A `hosam00/cinebox` GitHub repo with the `release.yml` workflow present.
+- A `hosam00/cinebox` GitHub repository with the `release.yml` workflow present.
 
 ## One-time setup
 
@@ -20,68 +20,108 @@ pushing a tag + creating a GitHub Release.
 2. Name it exactly **`pypi`** (the workflow references this name).
 3. Set the environment URL to `https://pypi.org/project/cinebox/`.
 
-### 2. PyPI pending publisher
+### 2. PyPI trusted publisher
 
-1. Go to [PyPI Trusted Publishers](https://pypi.org/manage/account/publishing/).
-2. **Add a new pending publisher** and fill in exactly:
+The `cinebox` project already exists on PyPI, so add the publisher from the
+project settings:
 
-   | Field            | Value                              |
-   |------------------|------------------------------------|
-   | Owner            | `hosam00`                          |
-   | Repository       | `cinebox`                          |
-   | Workflow name    | `Publish to PyPI` (must match the `name:` in `release.yml`) |
-   | Environment name | `pypi`                             |
+1. Open [your PyPI projects](https://pypi.org/manage/projects/), choose
+   **cinebox**, then open **Publishing**.
+2. Add a GitHub Actions trusted publisher with exactly:
 
-   (Optionally repeat with the TestPyPI tab to test against
-   `pypi.org/simple/` first. See "Test runs" below.)
+   | Field            | Value             |
+   |------------------|-------------------|
+   | Owner            | `hosam00`         |
+   | Repository       | `cinebox`         |
+   | Workflow name    | `release.yml`     |
+   | Environment name | `pypi`            |
 
-3. Save. PyPI tells it what to expect; GitHub now has permission to mint
-   publish tokens via the workflow's OIDC identity.
+   For a TestPyPI dry run, use a pending publisher under the TestPyPI tab and
+   install test builds from `https://test.pypi.org/simple/`. See "Test runs"
+   below.
+
+3. Save. PyPI tells the workflow what to expect; GitHub can now mint publish
+   tokens through OIDC.
+
+> A brand-new PyPI project uses the **pending publisher** flow from your
+> account page. Because `cinebox` is already published, configure the trusted
+> publisher from the project's **Publishing** settings instead.
 
 ## Releasing
 
-1. Bump the version in `pyproject.toml`.
-2. Sanity-check locally:
+1. Update the version in `pyproject.toml` and move the changelog entries out of
+   `## [Unreleased]`.
+2. Update the lockfile and run the full local gate:
 
    ```bash
-   uv sync --group dev
-   uv run pytest
+   uv lock
+   uv sync --group dev --locked
+   uv run ruff check src tests
+   uv run ruff format --check src tests
+   uv run pytest --cov=src/cinebox
    uv build
    ```
 
-3. Tag and push:
+3. Smoke-test the built wheel:
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   uv venv /tmp/cinebox-release-venv
+   uv pip install --python /tmp/cinebox-release-venv/bin/python dist/*.whl
+   /tmp/cinebox-release-venv/bin/cinebox --version
    ```
 
-4. Create a GitHub Release **from that tag** (Draft → Publish). The
-   `release: published` event triggers the workflow.
-5. Watch **Actions → Publish to PyPI**. The publish step only runs for
-   tag refs; workflow_dispatch builds but does not publish.
-6. Verify:
+4. Commit and push the release changes to `main`, then wait for CI:
 
    ```bash
-   pipx install cinebox
-   uv tool run cinebox --help
+   git status
+   git add <files>
+   git commit -m "chore(release): v0.2.0"
+   git push origin main
+   ```
+
+5. Tag the tested commit and push the tag. The tag must match the package
+   version without the leading `v`; the release workflow enforces this.
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+6. Create a GitHub Release **from that tag** (Draft → Publish). The
+   `release: published` event triggers the workflow.
+7. Watch **Actions → Publish to PyPI**. The publish step only runs for tag refs;
+   `workflow_dispatch` builds and smoke-tests but does not publish.
+8. Verify the published artifact:
+
+   ```bash
+   uvx --from "cinebox==0.2.0" cinebox --version
+   uvx --from "cinebox==0.2.0" cinebox --help
    ```
 
 ## Notes
 
 - The PyPI project name must equal the package name `cinebox` from
-  `pyproject.toml`; the first release owns the name.
-- The `environment: pypi` must exactly match the pending publisher's
-  environment name or the OIDC exchange fails with "pending publisher
-  not found".
-- Manual workflow_dispatch runs build only (tag guard on the publish
-  step) — use it to smoke-test `uv build` in CI.
+  `pyproject.toml`.
+- The `environment: pypi` must exactly match the trusted publisher's environment
+  name, or the OIDC exchange fails.
+- Never reuse a version that already exists on PyPI. Bump the version before
+  tagging.
+- Manual `workflow_dispatch` runs build and wheel smoke tests only (the publish
+  step is tag-gated) — use it to validate the workflow.
 
 ## Test runs (optional)
 
 Point a temporary workflow at TestPyPI with
 `https://test.pypi.org/legacy/` as the repository and
 `https://test.pypi.org/project/cinebox/` as the environment URL. Create a
-matching pending publisher under the TestPyPI tab of the Trusted
-Publishers page. After the first successful release you can remove it or
+matching pending publisher under the TestPyPI tab of the Trusted Publishers
+page. Install test builds with:
+
+```bash
+uvx --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  --from "cinebox==0.2.0" cinebox --version
+```
+
+After the first successful release you can remove the TestPyPI publisher or
 keep it for practice runs.

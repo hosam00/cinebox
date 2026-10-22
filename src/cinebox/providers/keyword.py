@@ -63,5 +63,5 @@ class KeywordProvider(BaseProvider, abc.ABC):
         """
         prefix = f"{cls.scheme}:"
         if imdb_id.startswith(prefix):
-            return imdb_id[len(prefix):]
+            return imdb_id[len(prefix) :]
         return None

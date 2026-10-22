@@ -2,6 +2,7 @@
 
 import gzip
 import io
+import stat
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -83,9 +84,7 @@ class TestDownloadSubtitle:
             order.append(("close", kwargs))
 
         monkeypatch.setattr(subs, "new_http_client", fake_client)
-        track = SubtitleTrack(
-            lang="English - eng", code="en", url="https://vidapi.cloud/x/eng.srt"
-        )
+        track = SubtitleTrack(lang="English - eng", code="en", url="https://vidapi.cloud/x/eng.srt")
         path = download_subtitle(track, tmp_path)
         assert path == tmp_path / "en.srt"
         assert b"WEBVTT" in path.read_bytes()
@@ -111,6 +110,7 @@ class TestDownloadSubtitle:
     def test_accepts_plain_dict(self, tmp_path, monkeypatch):
         class Resp:
             content = b"1\n00:00:01,000 --> 00:00:03,000\nHello\n"
+
             def raise_for_status(self):
                 pass
 
@@ -243,7 +243,7 @@ class TestYify:
         self._disable_cache(monkeypatch)
         html = _movie_html(
             _row(1, 20, "English", "mov-1", ["En.x264"]),
-            _row(2, 60, "Arabic",  "mov-2", ["Ar.DVDRip"]),
+            _row(2, 60, "Arabic", "mov-2", ["Ar.DVDRip"]),
             _row(3, 10, "English", "mov-3", ["En.720p"]),
         )
         tracks = subs._parse_yify_movie(html, ["ar", "en"])
@@ -270,6 +270,7 @@ class TestYify:
 
         class FakeResp:
             text = resp_html
+
             def raise_for_status(self):
                 pass
 
@@ -324,18 +325,17 @@ class TestSubsource:
     @staticmethod
     def _page(*records: tuple[int, str, str, str]) -> str:
         parts = [
-            (f'{{"id":{rid},"language":"{lang}","release_type":"other",'
-             f'"release_info":"{release}","upload_date":"2024-01-01T00:00:00.000Z",'
-             '"hearing_impaired":0,"caption":"","rating":"unrated","uploader_id":1,'
-             f'"uploader_displayname":"u","link":"{link}","production_type":null,'
-             '"last_subtitle":false}')
+            (
+                f'{{"id":{rid},"language":"{lang}","release_type":"other",'
+                f'"release_info":"{release}","upload_date":"2024-01-01T00:00:00.000Z",'
+                '"hearing_impaired":0,"caption":"","rating":"unrated","uploader_id":1,'
+                f'"uploader_displayname":"u","link":"{link}","production_type":null,'
+                '"last_subtitle":false}'
+            )
             for rid, lang, release, link in records
         ]
         body = "[" + ",".join(parts) + "]"
-        return (
-            f"<html><body><script>self.__next_f.push([1,\"{body}\"])</script>"
-            "</body></html>"
-        )
+        return f'<html><body><script>self.__next_f.push([1,"{body}"])</script></body></html>'
 
     @staticmethod
     def _slug_and_code():
@@ -350,20 +350,75 @@ class TestSubsource:
 
     def test_parse_filters_by_episode(self):
         page = self._page(
-            (454247, "arabic", "Breaking.Bad.S03E07.720p.HDTV.X264-DIMENSION",
-             "breaking-bad-season-3/arabic/454247"),
-            (454248, "arabic", "Breaking.Bad.S03E08.720p.HDTV.X264-DIMENSION",
-             "breaking-bad-season-3/arabic/454248"),
-            (454249, "english", "Breaking.Bad.S03E07.720p.HDTV.X264-DIMENSION",
-             "breaking-bad-season-3/english/454249"),
-            (454250, "arabic", "Breaking.Bad.Season.03.720p-PFT",
-             "breaking-bad-season-3/arabic/454250"),
+            (
+                454247,
+                "arabic",
+                "Breaking.Bad.S03E07.720p.HDTV.X264-DIMENSION",
+                "breaking-bad-season-3/arabic/454247",
+            ),
+            (
+                454248,
+                "arabic",
+                "Breaking.Bad.S03E08.720p.HDTV.X264-DIMENSION",
+                "breaking-bad-season-3/arabic/454248",
+            ),
+            (
+                454249,
+                "english",
+                "Breaking.Bad.S03E07.720p.HDTV.X264-DIMENSION",
+                "breaking-bad-season-3/english/454249",
+            ),
+            (
+                454250,
+                "arabic",
+                "Breaking.Bad.Season.03.720p-PFT",
+                "breaking-bad-season-3/arabic/454250",
+            ),
         )
         tracks = subs._parse_subsource_page(page, "breaking-bad-season-3", 3, 7, ["ar"])
-        assert len(tracks) == 1
+        assert len(tracks) == 1  # season packs are rejected
         assert tracks[0].code == "ar"
         assert tracks[0].url.endswith("/subtitle/breaking-bad-season-3/arabic/454247")
         assert tracks[0].lang.startswith("العربية — Breaking.Bad.S03E07")
+
+    def test_whole_season_packs_do_not_match_specific_episode(self, monkeypatch):
+        self._disable_cache(monkeypatch)
+        page = self._page(
+            (
+                1,
+                "english",
+                "Stargate.SG-1.S01.1080p.BluRay.x264-BORDURE",
+                "stargate-sg-1-season-1/english/1",
+            ),
+            (2, "english", "Stargate.SG-1.S02.BluRay.REMUX", "stargate-sg-1-season-2/english/2"),
+            (3, "english", "Stargate SG-1 Season 1", "stargate-sg-1-season-1/english/3"),
+            (4, "english", "Stargate.SG-1.S01E02.720p", "stargate-sg-1-season-1/english/4"),
+            (5, "english", "Stargate.SG-1.S01E03.720p", "stargate-sg-1-season-1/english/5"),
+        )
+
+        class Resp:
+            status_code = 200
+            text = page
+
+            def raise_for_status(self):
+                pass
+
+        class Client:
+            calls = []
+
+            def get(self, url):
+                Client.calls.append(url)
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        tracks = subs.fetch_subsource("Stargate SG-1", ["en"], season=1, episode=2)
+        # Only the exact S01E02 record is safe; season packs are rejected.
+        assert len(tracks) == 1
+        assert tracks[0].url.endswith("/4")
 
     def test_parse_filters_language(self):
         page = self._page(
@@ -388,6 +443,7 @@ class TestSubsource:
             def __init__(self):
                 self.status_code = 200
                 self.text = page
+
             def raise_for_status(self):
                 pass
 
@@ -415,6 +471,7 @@ class TestSubsource:
             def __init__(self):
                 self.status_code = 200
                 self.text = page
+
             def raise_for_status(self):
                 pass
 
@@ -442,11 +499,13 @@ class TestSubsource:
             def __init__(self, status, text):
                 self.status_code = status
                 self.text = text
+
             def raise_for_status(self):
                 pass
 
         class Client:
             calls = []
+
             def get(self, url):
                 Client.calls.append(url)
                 if "the-office" in url:
@@ -474,14 +533,13 @@ class TestSubsource:
 
     def test_cache_avoids_network(self, monkeypatch):
         track = SubtitleTrack(
-            lang="العربية — en.srt", code="ar",
+            lang="العربية — en.srt",
+            code="ar",
             url="https://subsource.net/subtitle/x/arabic/1",
         )
         cache_path = subs._subsource_cache_file("inception", None, None, ["en"])
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            str([track.model_dump()]).replace("'", '"')
-        )
+        cache_path.write_text(str([track.model_dump()]).replace("'", '"'))
         monkeypatch.setattr(
             subs,
             "get",
@@ -501,7 +559,8 @@ class TestSubsource:
             zf.writestr("Breaking.Bad.S03E07.720p.srt", srt)
         detail = (
             '<html><a href="https://api.subsource.net/v1/subtitle/download/'
-            + "a" * 64 + '">download</a></html>'
+            + "a" * 64
+            + '">download</a></html>'
         )
 
         class Resp:
@@ -509,11 +568,14 @@ class TestSubsource:
                 self._payload = payload
                 self._is_text = is_text
                 self.status_code = 200
+
             def raise_for_status(self):
                 pass
+
             @property
             def text(self):
                 return self._payload if self._is_text else ""
+
             @property
             def content(self):
                 return self._payload if not self._is_text else b""
@@ -530,7 +592,8 @@ class TestSubsource:
 
         monkeypatch.setattr(subs, "new_http_client", fake_client)
         track = SubtitleTrack(
-            lang="العربية — x", code="ar",
+            lang="العربية — x",
+            code="ar",
             url="https://subsource.net/subtitle/breaking-bad-season-3/arabic/454247",
         )
         path = download_subtitle(track, tmp_path)
@@ -551,9 +614,11 @@ class TestFetchSubtitleFallback:
 
     @staticmethod
     def _chosen() -> SearchResult:
-        return SearchResult(
-            imdb_id="tt1375666", title="Inception", media_type=MediaType.MOVIE
-        )
+        return SearchResult(imdb_id="tt1375666", title="Inception", media_type=MediaType.MOVIE)
+
+    @staticmethod
+    def _dest(*parts: str) -> str:
+        return str(Path(cine.cache_dir()) / "subtitles" / Path(*parts))
 
     @staticmethod
     def _stub_download(monkeypatch):
@@ -563,33 +628,101 @@ class TestFetchSubtitleFallback:
             lambda t, dest: str(Path(dest) / f"{t.code or 'en'}.srt"),
         )
 
+    @staticmethod
+    def _auto(monkeypatch):
+        monkeypatch.setattr(
+            cine,
+            "get",
+            lambda section, key, default=None: (
+                "auto" if (section, key) == ("subtitle", "source") else default
+            ),
+        )
+
     def test_auto_falls_back_when_provider_empty(self, monkeypatch):
+        self._auto(monkeypatch)
         fetched = [SubtitleTrack(lang="English — En.srt", code="en", url="https://x.zip")]
         monkeypatch.setattr(cine, "fetch_yify", lambda imdb, lang: fetched)
+        monkeypatch.setattr(cine, "fetch_subsource", lambda *a, **k: [])
         self._stub_download(monkeypatch)
         stream = StreamInfo(url="x", provider="fake", subtitles=[])
         out = cine.CineApp._fetch_subtitle(self._app(), stream, self._chosen())
-        assert out == "/tmp/tt1375666/en.srt"
+        assert out == self._dest("tt1375666", "en.srt")
 
     def test_auto_keeps_provider_tracks(self, monkeypatch):
+        self._auto(monkeypatch)
         provider_track = [SubtitleTrack(lang="eng", code="en", url="https://v/e.srt")]
-
-        def fetch_cb(imdb, lang):
-            raise AssertionError("yifysubtitles should not be queried")
-
-        monkeypatch.setattr(cine, "fetch_yify", fetch_cb)
+        monkeypatch.setattr(cine, "fetch_yify", lambda imdb, lang: [])
+        monkeypatch.setattr(cine, "fetch_subsource", lambda *a, **k: [])
         self._stub_download(monkeypatch)
         stream = StreamInfo(url="x", provider="fake", subtitles=provider_track)
         out = cine.CineApp._fetch_subtitle(self._app(), stream, self._chosen())
-        assert out == "/tmp/tt1375666/en.srt"
+        assert out == self._dest("tt1375666", "en.srt")
+
+    def test_candidate_exception_falls_through(self, monkeypatch):
+        self._auto(monkeypatch)
+        monkeypatch.setattr(cine, "fetch_yify", lambda *a, **k: [])
+        monkeypatch.setattr(cine, "fetch_subsource", lambda *a, **k: [])
+        tracks = [
+            SubtitleTrack(lang="bad", code="en", url="https://bad"),
+            SubtitleTrack(lang="good", code="ar", url="https://good"),
+        ]
+
+        class FakeUi:
+            def subtitle_menu(self, tracks, title):
+                return tracks[0]
+
+        app = type("App", (), {"_interactive": True, "ui": FakeUi()})()
+        calls = []
+
+        def fake_download(track, dest):
+            calls.append(track.url)
+            if track.url == "https://bad":
+                raise ValueError("bad subtitle")
+            return str(Path(dest) / "ar.srt")
+
+        monkeypatch.setattr(cine, "download_subtitle", fake_download)
+        stream = StreamInfo(url="x", provider="fake", subtitles=tracks)
+        out = cine.CineApp._fetch_subtitle(app, stream, self._chosen())
+        assert calls == ["https://bad", "https://good"]
+        assert out == self._dest("tt1375666", "ar.srt")
+
+    def test_auto_merges_all_sources_and_dedupes(self, monkeypatch):
+        provider_track = [SubtitleTrack(lang="en", code="en", url="https://v/e.srt")]
+        yify_hit = [SubtitleTrack(lang="English — En.srt", code="en", url="https://v/e.srt")]
+        subsource_hit = [SubtitleTrack(lang="العربية", code="ar", url="https://subsource.net/x")]
+        os_hit = [SubtitleTrack(lang="English [HI] — 1x02", code="en", url="os:111")]
+        monkeypatch.setattr(cine, "fetch_yify", lambda imdb, lang: yify_hit)
+        monkeypatch.setattr(cine, "fetch_subsource", lambda title, lang, **kw: subsource_hit)
+        monkeypatch.setattr(cine, "fetch_opensubtitles", lambda *a, **kw: os_hit)
+        monkeypatch.setattr(
+            cine,
+            "get",
+            lambda section, key, default=None: {
+                ("opensubtitles", "api_key"): "KEY",
+                ("opensubtitles", "username"): "user",
+                ("opensubtitles", "password"): "pass",
+            }.get((section, key), default),
+        )
+        captured = {}
+
+        class CaptureUi(TestFetchSubtitleFallback.FakeUi):
+            def subtitle_menu(self, tracks, title):
+                captured["tracks"] = tracks
+                return tracks[0]
+
+        app = self._app()
+        app.ui = CaptureUi()
+        self._stub_download(monkeypatch)
+        stream = StreamInfo(url="x", provider="fake", subtitles=provider_track)
+        cine.CineApp._fetch_subtitle(app, stream, self._chosen())
+        urls = [t.url for t in captured["tracks"]]
+        assert urls == ["https://v/e.srt", "https://subsource.net/x", "os:111"]
 
     def test_provider_source_skips_yifysubtitles(self, monkeypatch):
         monkeypatch.setattr(
             cine,
             "get",
-            lambda section, key, default=None: (
-                "provider" if key == "source" else default
-            ),
+            lambda section, key, default=None: "provider" if key == "source" else default,
         )
         monkeypatch.setattr(
             cine,
@@ -604,31 +737,35 @@ class TestFetchSubtitleFallback:
         stream = StreamInfo(url="x", provider="fake", subtitles=[])
         assert cine.CineApp._fetch_subtitle(self._app(), stream, self._chosen()) is None
 
-    def test_non_interactive_skips_yifysubtitles(self, monkeypatch):
-        monkeypatch.setattr(
-            cine,
-            "fetch_yify",
-            lambda imdb, lang: (_ for _ in ()).throw(AssertionError("not called")),
-        )
+    def test_non_interactive_fetches_external_subtitles(self, monkeypatch):
+        self._auto(monkeypatch)
+        fetched = [SubtitleTrack(lang="English — En.srt", code="en", url="https://x.zip")]
+        monkeypatch.setattr(cine, "fetch_yify", lambda imdb, lang: fetched)
+        monkeypatch.setattr(cine, "fetch_subsource", lambda *a, **k: [])
+        self._stub_download(monkeypatch)
         stream = StreamInfo(url="x", provider="fake", subtitles=[])
         out = cine.CineApp._fetch_subtitle(self._app(interactive=False), stream, self._chosen())
-        assert out is None
+        assert out == self._dest("tt1375666", "en.srt")
 
     def test_picker_uses_menu_when_multiple_tracks(self, monkeypatch):
+        self._auto(monkeypatch)
         tracks = [
             SubtitleTrack(lang="Arabic — ar.srt", code="ar", url="https://x/ar.zip"),
             SubtitleTrack(lang="English — en.srt", code="en", url="https://x/en.zip"),
         ]
         monkeypatch.setattr(cine, "fetch_yify", lambda imdb, lang: tracks)
+        monkeypatch.setattr(cine, "fetch_subsource", lambda *a, **k: [])
         self._stub_download(monkeypatch)
         stream = StreamInfo(url="x", provider="fake", subtitles=[])
         out = cine.CineApp._fetch_subtitle(self._app(), stream, self._chosen())
-        assert out == "/tmp/tt1375666/en.srt"
+        assert out == self._dest("tt1375666", "en.srt")
 
     def test_tv_uses_subsource_with_season_episode(self, monkeypatch):
+        self._auto(monkeypatch)
         fetched = [
             SubtitleTrack(
-                lang="العربية — Breaking.Bad.S03E01.720p", code="ar",
+                lang="العربية — Breaking.Bad.S03E01.720p",
+                code="ar",
                 url="https://subsource.net/subtitle/breaking-bad-season-3/arabic/454001",
             )
         ]
@@ -642,15 +779,427 @@ class TestFetchSubtitleFallback:
         monkeypatch.setattr(
             cine,
             "get",
-            lambda section, key, default=None: default,
+            lambda section, key, default=None: (
+                "auto" if (section, key) == ("subtitle", "source") else default
+            ),
         )
         self._stub_download(monkeypatch)
         stream = StreamInfo(url="x", provider="fake", subtitles=[])
-        chosen = SearchResult(
-            imdb_id="tt0903747", title="Breaking Bad", media_type=MediaType.TV
-        )
-        out = cine.CineApp._fetch_subtitle(
-            self._app(), stream, chosen, season=3, episode=1
-        )
+        chosen = SearchResult(imdb_id="tt0903747", title="Breaking Bad", media_type=MediaType.TV)
+        out = cine.CineApp._fetch_subtitle(self._app(), stream, chosen, season=3, episode=1)
         assert seen == {"season": 3, "episode": 1}
-        assert out == "/tmp/tt0903747/s03e01/ar.srt"
+        assert out == self._dest("tt0903747", "s03e01", "ar.srt")
+
+
+class TestOpenSubtitles:
+    KEY = "test_apikey"
+
+    def _config(self, monkeypatch):
+        monkeypatch.setattr(
+            subs,
+            "get",
+            lambda *a: (
+                self.KEY
+                if a[:2] == ("opensubtitles", "api_key")
+                else (
+                    False
+                    if a[:2] == ("cache", "enabled")
+                    else (True if a[1] == "enabled" else a[2])
+                )
+            ),
+        )
+
+    def test_disabled_skips_even_with_key(self, monkeypatch):
+        monkeypatch.setattr(
+            subs,
+            "get",
+            lambda section, key, default=None: (
+                self.KEY if key == "api_key" else (False if key == "enabled" else default)
+            ),
+        )
+        assert subs.fetch_opensubtitles("tt0118480", ["en"]) == []
+
+    def test_login_requires_username_and_password(self, monkeypatch):
+        monkeypatch.setattr(
+            subs,
+            "get",
+            lambda section, key, default=None: (
+                self.KEY if key == "api_key" else (True if key == "enabled" else default)
+            ),
+        )
+        monkeypatch.setattr(
+            subs,
+            "new_http_client",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not login")),
+        )
+        assert subs._os_token() is None
+
+    def test_login_posts_credentials_with_api_key_header(self, monkeypatch):
+        monkeypatch.setattr(
+            subs,
+            "get",
+            lambda section, key, default=None: {
+                "api_key": self.KEY,
+                "username": "user@example.com",
+                "password": "secret",
+                "enabled": True,
+            }.get(key, default),
+        )
+        captured = {}
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"token": "jwt"}
+
+        class Client:
+            def post(self, url, json=None):
+                captured["url"] = url
+                captured["json"] = json
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            captured["headers"] = kwargs.get("headers")
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        assert subs._os_token() == "jwt"
+        assert captured["url"].endswith("/login")
+        assert captured["json"] == {"username": "user@example.com", "password": "secret"}
+        assert captured["headers"]["Api-Key"] == self.KEY
+
+    def test_cached_token_is_bound_to_credentials(self, monkeypatch, tmp_path):
+        creds = {"username": "one", "password": "first"}
+        monkeypatch.setattr(
+            subs,
+            "get",
+            lambda section, key, default=None: {
+                "api_key": self.KEY,
+                "enabled": True,
+                **creds,
+            }.get(key, default),
+        )
+        monkeypatch.setattr(subs, "cache_dir", lambda: tmp_path)
+        calls = []
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"token": "jwt"}
+
+        class Client:
+            def post(self, url, json=None):
+                calls.append(json)
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        assert subs._os_token() == "jwt"
+        assert subs._os_token() == "jwt"
+        assert len(calls) == 1
+        creds["password"] = "second"
+        assert subs._os_token() == "jwt"
+        assert len(calls) == 2
+
+    def test_no_api_key_skips(self, monkeypatch):
+        monkeypatch.setattr(subs, "get", lambda *a: a[2])
+        monkeypatch.setattr(
+            subs,
+            "_os_token",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not auth")),
+        )
+        assert subs.fetch_opensubtitles("tt0118480", ["en"]) == []
+
+    def test_synthetic_imdb_id_skips_without_crashing(self, monkeypatch):
+        self._config(monkeypatch)
+        monkeypatch.setattr(
+            subs,
+            "new_http_client",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not query")),
+        )
+        assert subs.fetch_opensubtitles("stardima:123", ["en"]) == []
+
+    def test_token_file_is_private(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(subs, "cache_dir", lambda: tmp_path)
+        subs._os_remember_token("secret")
+        token_path = tmp_path / "os_token.json"
+        assert token_path.exists()
+        assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+    def test_search_filters_langs_and_caps(self, monkeypatch):
+        self._config(monkeypatch)
+        payload = {
+            "data": [
+                {
+                    "id": 1,
+                    "attributes": {
+                        "language": "en",
+                        "release_name": "Show.S01E02.720p.WEB-DL",
+                        "download_count": 10,
+                        "hearing_impaired": False,
+                        "files": [{"file_id": 111, "format": "srt"}],
+                    },
+                },
+                {
+                    "id": 2,
+                    "attributes": {
+                        "language": "ar",
+                        "release_name": "Show.S01E02.ara",
+                        "download_count": 5,
+                        "files": [{"file_id": 222, "format": "srt"}],
+                    },
+                },
+                {
+                    "id": 3,
+                    "attributes": {
+                        "language": "fr",
+                        "release_name": "French.One",
+                        "download_count": 9,
+                        "files": [{"file_id": 333, "format": "srt"}],
+                    },
+                },
+                {
+                    "id": 4,
+                    "attributes": {
+                        "language": "en",
+                        "release_name": "Show.Second",
+                        "download_count": 1,
+                        "files": [{"file_id": 444, "format": "srt"}],
+                    },
+                },
+            ]
+        }
+        captured = {}
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return payload
+
+        class Client:
+            def get(self, url, params=None):
+                captured["url"] = url
+                captured["params"] = params
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        monkeypatch.setattr(subs, "_os_token", lambda *a, **k: "tok")
+        tracks = subs.fetch_opensubtitles("tt0118480", ["en", "ar"], per_lang=1)
+        assert captured["url"].endswith("/api/v1/subtitles")
+        assert captured["params"]["imdb_id"] == "118480"  # tt prefix stripped
+        assert "en,ar" in captured["params"]["languages"]
+        assert len(tracks) == 2  # one per requested language
+        assert tracks[0].code == "en"
+        assert tracks[0].url == "os:111"
+        assert "Show.S01E02.720p" in tracks[0].lang
+        assert tracks[1].code == "ar"
+        assert tracks[1].url == "os:222"
+
+    def test_search_passes_season_episode(self, monkeypatch):
+        self._config(monkeypatch)
+        captured = {}
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": []}
+
+        class Client:
+            def get(self, url, params=None):
+                captured["params"] = params
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        monkeypatch.setattr(subs, "_os_token", lambda *a, **k: "tok")
+        subs.fetch_opensubtitles("tt0118480", ["en"], season=1, episode=2)
+        assert captured["params"]["season_number"] == "1"
+        assert captured["params"]["episode_number"] == "2"
+
+    def test_download_via_api_link(self, monkeypatch, tmp_path):
+        self._config(monkeypatch)
+        srt_body = gzip.compress(b"1\n00:00:00,000 --> 00:00:02,000\nHello\n\n")
+        calls = {"post": 0}
+
+        def post_resp():
+            calls["post"] += 1
+            return {"link": "https://dl/ok"}
+
+        class Resp:
+            status_code = 200
+            content = srt_body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return post_resp()
+
+        class Client:
+            def post(self, url, json=None):
+                return Resp()
+
+            def get(self, url):
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        monkeypatch.setattr(subs, "_os_token", lambda *a, **k: "tok")
+        out = tmp_path / "ostest"
+        path = subs._download_url(SubtitleTrack(lang="English", code="en", url="os:999"), out)
+        assert path is not None
+        assert path.exists()
+        assert "Hello" in path.read_text()
+        assert calls["post"] == 1
+
+    def test_download_link_does_not_receive_api_auth(self, monkeypatch, tmp_path):
+        self._config(monkeypatch)
+        srt_body = gzip.compress(b"1\n00:00:00,000 --> 00:00:02,000\nHello\n\n")
+        seen: list[dict[str, str]] = []
+
+        class Resp:
+            status_code = 200
+            content = srt_body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"link": "https://dl.example/file.srt"}
+
+        class Client:
+            def post(self, url, json=None):
+                return Resp()
+
+            def get(self, url):
+                return Resp()
+
+        @contextmanager
+        def fake_client(**kwargs):
+            seen.append(dict(kwargs.get("headers") or {}))
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        monkeypatch.setattr(subs, "_os_token", lambda *a, **k: "tok")
+        path = subs._download_url(SubtitleTrack(lang="English", code="en", url="os:999"), tmp_path)
+
+        assert path is not None
+        assert len(seen) == 2
+        assert "Authorization" in seen[0]
+        assert "Api-Key" in seen[0]
+        assert "Authorization" not in seen[1]
+        assert "Api-Key" not in seen[1]
+
+    def test_download_retries_once_on_401(self, monkeypatch, tmp_path):
+        self._config(monkeypatch)
+        srt_body = gzip.compress(b"1\n00:00:00,000 --> 00:00:02,000\nHi\n\n")
+        state = {"post": 0}
+
+        class Resp:
+            def __init__(self, status, content=b""):
+                self.status_code = status
+                self.content = content
+                self._st = status
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise RuntimeError("http")
+
+            def json(self):
+                return {"link": "https://dl/x"}
+
+        class Client:
+            def post(self, url, json=None):
+                state["post"] += 1
+                if state["post"] == 1:
+                    return Resp(401)
+                return Resp(200, srt_body)
+
+            def get(self, url):
+                return Resp(200, srt_body)
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+        monkeypatch.setattr(subs, "_os_token", lambda *a, **k: "tok")
+        path = subs._download_url(
+            SubtitleTrack(lang="English", code="en", url="os:999"), tmp_path / "ostest2"
+        )
+        assert path is not None
+        assert state["post"] == 2  # 401 then retry
+
+
+class TestSubtitleSafetyAndFormats:
+    def _client(self, monkeypatch, content: bytes):
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+        resp = Resp()
+        resp.content = content
+
+        class Client:
+            def get(self, url):
+                return resp
+
+        @contextmanager
+        def fake_client(**kwargs):
+            yield Client()
+
+        monkeypatch.setattr(subs, "new_http_client", fake_client)
+
+    def test_ass_content_is_accepted_and_extension_corrected(self, tmp_path, monkeypatch):
+        content = (
+            b"[Script Info]\nTitle: x\n\n[Events]\n"
+            b"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n"
+        )
+        self._client(monkeypatch, content)
+        track = SubtitleTrack(lang="English", code="en", url="https://x/en.srt")
+
+        path = download_subtitle(track, tmp_path)
+
+        assert path == tmp_path / "en.ass"
+        assert path.read_bytes() == content
+
+    def test_code_cannot_escape_destination(self, tmp_path, monkeypatch):
+        self._client(monkeypatch, b"1\n00:00:01,000 --> 00:00:02,000\nHi\n")
+        track = SubtitleTrack(lang="English", code="../../evil", url="https://x/en.srt")
+
+        path = download_subtitle(track, tmp_path)
+
+        assert path is not None
+        assert path.parent == tmp_path
+        assert path.name == "evil.srt"
+
+    def test_subsource_cache_distinguishes_movie_years(self):
+        a = subs._subsource_cache_file("inception", None, None, ["en"], 2010)
+        b = subs._subsource_cache_file("inception", None, None, ["en"], 2024)
+        assert a != b

@@ -85,7 +85,7 @@ class ProviderRegistry:
             Log.info(f"Resolving via {provider.name}...")
             try:
                 stream = provider.resolve(imdb_id, media_type, season, episode)
-                Log.info(f"Stream resolved by {provider.name}: {stream.url[:60]}...")
+                Log.info(f"Stream resolved by {provider.name}.")
                 return stream
             except Exception as e:  # noqa: BLE001 - provider errors are expected
                 errors.append(f"{provider.name}: {e}")

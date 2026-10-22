@@ -1,297 +1,314 @@
 <div align="center">
 
-# 🎬 cinebox
+# cinebox
 
-**A terminal-based movie streaming tool. Like ani-cli, but for cinema.**
+**Search, stream, and download movies and TV shows from your terminal.**
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/hosam00/cinebox/actions/workflows/ci.yml/badge.svg)](https://github.com/hosam00/cinebox/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/cinebox?logo=pypi&logoColor=white)](https://pypi.org/project/cinebox/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/hosam00/cinebox/blob/main/LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![tests](https://img.shields.io/badge/tests-126%20passing-brightgreen)]()
-[![PyPI version](https://img.shields.io/pypi/v/cinebox?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/cinebox/)
 
 </div>
 
-<p align="center">
-  <em>record with vhs / asciinema — replace <code>docs/demo.gif</code> with your recording</em>
-</p>
+`cinebox` is a Python TUI for browsing IMDb, resolving playable streams through
+a provider chain, and opening them in **mpv** or **VLC**. It supports TV episode
+browsing, batch downloads, subtitles, history, favorites, and a configurable
+terminal interface.
 
-<p align="center">
-  <img src="docs/demo.gif" alt="cinebox demo — search, stream, and play in the terminal" width="700" />
-</p>
+Inspired by [ani-cli](https://github.com/pystardust/ani-cli). `cinebox` indexes
+publicly accessible sources and hosts no media.
 
-A terminal-based tool to search, stream, and download movies and TV shows — inspired by [ani-cli](https://github.com/pystardust/ani-cli), built in Python with a rich interactive TUI and a provider-based streaming architecture.
+## Features
 
-Watch in **mpv** or **VLC**, download via **yt-dlp**, fetch **subtitles** — all without a single API key.
+- **Terminal-first interface** — arrow-key navigation, themed panels, ANSI
+  poster art, and a numbered fallback for SSH or non-interactive sessions.
+- **Movies and TV** — search IMDb, pick a season and episode, or jump directly
+  to an IMDb ID.
+- **Provider fallback chain** — if one source fails, the next provider is tried
+  automatically.
+- **Stream or download** — open a stream in mpv/VLC or save it locally with
+  yt-dlp. TV episodes can be marked and downloaded in batches.
+- **Subtitles** — keyless YIFY and SubSource sources, plus optional
+  OpenSubtitles support for movies and per-episode TV subtitles.
+- **History and favorites** — resume a recent title or keep a personal watch
+  list.
+- **Configurable** — player, download paths, quality, 17 color themes, poster
+  scale, subtitle languages, and Discord Rich Presence.
+- **Extensible** — drop a new provider into `src/cinebox/providers/` and it is
+  discovered automatically.
 
-```
-┌─────────┐   Rich TUI    ┌──────────┐    resolve    ┌──────────────┐   play    ┌───────┐
-│  IMDb   │ ─────────────▶│ cinebox  │ ─────────────▶│   provider   │──────────▶│  mpv  │
-│ suggest │               └──────────┘               │ (imdb_su ·   │          │  vlc  │
-└─────────┘                    │                     │  vidsrc · …) │          └───────┘
-                               └──▶ yt-dlp ───▶ .mp4/.mkv   (download)
-```
+## Requirements
 
-## ✨ Features
+- Python **3.11+**
+- **mpv** (default) or **VLC**
+- **yt-dlp** and **ffmpeg** on your `PATH` for downloads
+- Linux is the primary target; macOS should work when the media tools are
+  installed
 
-- **No API keys, no accounts** — search runs against IMDb's public suggestion endpoint.
-- **Rich TUI** — arrow-key navigation, themed panels, full-screen menus, ANSI poster art.
-- **Stream or download** movies and TV episodes via a provider fallback chain.
-- **Batch download** — mark multiple TV episodes and grab them all at once.
-- **Subtitles** — anonymous fetching for movies and TV (Arabic + more via TUI settings).
-- **History & Favorites** — relaunch titles from a watch list or save them for later.
-- **Settings menu** — configure player, download paths, quality, theme, and subtitles from the TUI.
-- **17 color themes** — blue, red, purple, sunset, mint, coral, and more.
-- **Discord Rich Presence** — now-playing status (optional, needs a client ID).
-- **Headless-friendly** — numbered menu fallback for piped/SSH sessions.
-- **Open to extensions** — drop a new provider file into `providers/` and it registers itself automatically.
+Optional: `pypresence` for Discord Rich Presence.
 
-## 📦 Requirements
+## Installation
 
-- Python 3.11+
-- A media player: **mpv** (default) or **vlc**
-- `yt-dlp` + `ffmpeg` on your `PATH` for downloads
-- Optional: `pypresence` for Discord Rich Presence
-
-## 🚀 Installation
-
-### PyPI (recommended)
+### Package manager
 
 ```bash
-pipx install cinebox     # cleanest: isolated tool install
-uv tool install cinebox  # same thing, uv-managed
-pip install cinebox      # or plain pip
+uv tool install cinebox
+# or
+pipx install cinebox
 ```
 
-> **`pipx`** keeps cinebox and its dependencies in an isolated environment
-> so they never clash with your other Python packages. Install `pipx` with
-> `pipx --help` → `pipx install pipx` if you don't have it yet.
+Run without installing:
 
-### Local checkout (development)
+```bash
+uvx cinebox
+```
+
+### From source
 
 ```bash
 git clone https://github.com/hosam00/cinebox
 cd cinebox
-uv sync --group dev    # create .venv + install all deps
-uv run cinebox --help  # verify
+uv sync --group dev
+uv run cinebox
 ```
 
-## 🎮 Quick start
-
-### Interactive home screen (TUI)
+## Usage
 
 ```bash
+# Interactive home screen
 cinebox
-```
 
-Type a query to search, or use the home keys below. Everything else is driven
-by arrow keys, `Enter`, `D` for download, `S` for settings.
+# Search IMDb
+cinebox search "the matrix" -t movie
+cinebox search "breaking bad" -t tv
 
-### Stream directly by IMDb ID
+# Stream by IMDb ID
+cinebox play tt0133093
+cinebox play tt0944947 -t tv -s 1 -e 1
 
-```bash
-cinebox play tt0133093                      # The Matrix (1999)
-cinebox play tt0944947 -t tv -s 1 -e 1      # GoT S01E01
-```
-
-### Download
-
-```bash
+# Download
 cinebox download "the matrix" -q 720p
 cinebox download "breaking bad" -t tv
 ```
 
-### Headless search
+| Command | Description |
+| --- | --- |
+| `cinebox` | Open the interactive home screen |
+| `cinebox search <query>` | Search IMDb and browse results |
+| `cinebox play <imdb-id>` | Stream a movie or TV episode directly |
+| `cinebox download <query>` | Search and download a title |
+
+For scripted or headless use:
 
 ```bash
-echo 1 | cinebox search "inception" -t movie
+printf '1\n' | cinebox search "inception" -t movie
 ```
 
-## ⌨️ Key bindings
+Use `cinebox -v` for debug logging.
 
-| Key       | Context        | Action                                   |
-|-----------|----------------|------------------------------------------|
-| `↑` / `↓` | All menus      | Navigate                                 |
-| `Enter`   | Results        | Play selected                            |
-| `Enter`   | Quality menu   | Watch                                    |
-| `D`       | Quality menu   | Download at highlighted quality          |
-| `D`       | Episode picker | Download marked (or highlighted)         |
-| `Space`   | Episode picker | Toggle mark for batch download           |
-| `F`       | Search results | Toggle favorite                          |
-| `b`       | Any menu       | Back                                     |
-| `q`       | Any menu       | Quit                                     |
+## Key bindings
 
-## ⚙️ Configuration
+| Key | Context | Action |
+| --- | --- | --- |
+| `Up` / `Down` | All menus | Navigate |
+| `Enter` | Results | Play selected |
+| `Enter` | Quality menu | Watch |
+| `d` | Quality menu | Download at highlighted quality |
+| `d` | Episode picker | Download marked or highlighted episodes |
+| `Space` | Episode picker | Toggle episode mark |
+| `f` | Search results | Toggle favorite |
+| `b` | Any menu | Back |
+| `q` | Any menu | Quit |
 
-First run creates `~/.config/cinebox/config.toml`. Notable options:
+## Configuration
+
+The first run creates `~/.config/cinebox/config.toml`. Settings can also be
+edited from the TUI with `S`.
 
 ```toml
 [player]
 default = "mpv"        # mpv | vlc
 fullscreen = true
-extra_args = []        # extra args passed to the player (e.g. ["--mute"])
+extra_args = []
 
 [download]
 movies_dir = "~/Movies"
 tv_dir = "~/Movies/TV"
 quality = "1080p"
-parallel_fragments = 3 # 1–16 concurrent download segments
 
 [ui]
 theme = "blue"         # one of 17 themes
-
-[discord]
-enabled = false        # requires a registered client ID
-client_id = ""
+poster_scale = 1.0
 
 [subtitle]
 enabled = true
-source = "auto"        # auto | provider | yifysubtitles | subsource
+source = "auto"        # auto | provider | yifysubtitles | subsource | opensubtitles
 default_lang = "en"
-languages = ["en", "ar"]
-auto_download = false  # auto-fetch subs on watch (adds latency)
+auto_download = false
+
+[opensubtitles]
+enabled = true
+api_key = ""           # app key from opensubtitles.com
+username = ""
+password = ""
+
+[cache]
+enabled = true
+ttl_hours = 24
 ```
 
-Any unset key falls back to its default. Everything above the `[discord]`
-section is also editable from the TUI settings menu (`S`).
+Unset keys fall back to their defaults. See
+[`src/cinebox/config.py`](https://github.com/hosam00/cinebox/blob/main/src/cinebox/config.py) for the full configuration
+surface, including history, Discord, download concurrency, and subtitle
+languages.
 
-## 🔧 How it works
+### Security
 
-1. **Search** — `GET https://v3.sg.media-imdb.com/suggestion/{char}/{query}.json`
-   returns matching titles with IMDb IDs. No auth. Keyword-based providers
-   (e.g. Stardima) are merged automatically when present in the provider chain.
-2. **Resolve** — providers turn an IMDb ID into a playable HLS/MP4 URL:
-   - `imdb_su` (primary) — follows the embed player chain to the `vaplayer.ru`
-     stream API; headers are spoofed so the CDN serves child manifests.
-   - `vidsrc` (best-effort) — `vidsrc.to` → `vsembed.ru` → vidsrc data API.
-     Encrypted results that need a browser are skipped.
-   - `multiembed` (best-effort) — currently Turnstile-gated and skipped.
-   Providers are **auto-discovered** when dropped into `src/cinebox/providers/`.
-   Set `priority` on your class to control chain order (lower runs first).
-3. **Play** — mpv/VLC receive the URL plus the required `Referer`/`Origin`/
-   `User-Agent` headers, so the stream actually plays.
-4. **Download** — the same resolved URL is handed to `yt-dlp` (optionally with
-   subtitle muxing) and saved under your configured movies/TV directories.
+If OpenSubtitles is configured, `config.toml` contains an API key and account
+password in plaintext. The file is created with `0600` permissions and lives
+outside the repository, but it should still be treated as a secret. Never
+commit or share it. Rotate any credential that may have been exposed.
 
-Providers are tried in order; if one fails, the next takes over. Some providers
-can vanish or change overnight — resolution is best-effort by design.
+## How it works
 
-## 🗂️ Project layout
-
+```text
+ IMDb suggestions
+       │
+       ▼
+  ┌─────────┐    resolve     ┌─────────────────────────┐
+  │ cinebox │ ─────────────▶ │ provider chain          │
+  └─────────┘                │ imdb_su → vidsrc → ...  │
+       │                     └────────────┬────────────┘
+       │ download                         │ play
+       ▼                                  ▼
+    yt-dlp                            mpv / VLC
 ```
+
+1. **Search** — queries IMDb's public suggestion endpoint and merges results
+   from keyword-based providers when available.
+2. **Resolve** — providers turn an IMDb ID into an HLS or MP4 stream URL and
+   return the headers required by the CDN.
+3. **Play** — mpv receives the stream URL and the required `Referer`, `Origin`,
+   and `User-Agent` headers. VLC receives `Referer` and `User-Agent`; VLC 3
+   cannot set a custom `Origin`.
+4. **Download** — the resolved URL is passed to yt-dlp. Subtitles are supplied
+   to the player during playback and are not muxed into downloads.
+
+| Provider | Role | Notes |
+| --- | --- | --- |
+| `imdb_su` | Primary | Follows the embed chain to the vaplayer stream API |
+| `vidsrc` | Fallback | Best-effort; browser-gated results are skipped |
+| `multiembed` | Fallback | Best-effort; currently Turnstile-gated |
+
+Providers are tried in priority order and may change or disappear over time.
+Resolution is best-effort by design.
+
+## Project structure
+
+```text
 src/cinebox/
-├── __init__.py          click CLI + TUI orchestration (search / play / download)
-├── config.py            TOML config: defaults, paths, endpoints
-├── search.py            IMDb suggestion endpoint + merged search_all()
-├── models.py            pydantic models (SearchResult, StreamInfo, MediaType)
-├── metadata.py          best-effort IMDb title-page enrichment (cached)
-├── history.py           watch history persistence
-├── favorites.py         favorites persistence
-├── settings.py          interactive settings catalog + editor
-├── discord_rpc.py       optional Discord Rich Presence
-├── utils.py             logging, HTTP client, retry helpers
-├── player.py            mpv / VLC launch command builders
-├── downloader.py        yt-dlp wrapper + quality mapping
-├── subtitles.py         anonymous subtitle fetch (movies + TV)
-├── ui/
-│   ├── themes.py        17 color themes
-│   ├── art.py           ASCII header + goodbye art
-│   ├── terminal.py      raw terminal I/O helpers
-│   ├── components.py    menus, loading, episode picker, error panel, layout
-│   └── poster.py        ANSI truecolor poster rendering (Pillow + numpy)
-└── providers/
-    ├── base.py          BaseProvider, ProviderRegistry, ResolutionError
-    ├── discovery.py     auto-discovery of concrete providers
-    ├── keyword.py       KeywordProvider ABC for keyword-search platforms
-    ├── imdb_su.py       primary provider (vaplayer stream API)
-    ├── vidsrc.py        best-effort fallback
-    └── multiembed.py    best-effort fallback (Turnstile-gated)
+├── __init__.py       CLI and TUI orchestration
+├── config.py         configuration, paths, defaults
+├── models.py         typed search and stream models
+├── search.py         IMDb search and result merging
+├── metadata.py       cached IMDb metadata enrichment
+├── player.py         mpv and VLC command construction
+├── downloader.py     yt-dlp wrapper and quality mapping
+├── subtitles.py      keyless subtitle sources and OpenSubtitles
+├── settings.py       TUI settings catalog and editor
+├── history.py        watch history
+├── favorites.py      saved titles
+├── discord_rpc.py    optional Rich Presence
+├── providers/        streaming provider chain and discovery
+└── ui/               terminal UI, themes, posters, components
 ```
 
-## 🧪 Development
+## Development
 
 ```bash
 uv sync --group dev
-uv run pytest            # 126 hermetic tests, no network
+uv run pytest --cov=src/cinebox
 uv run ruff check src tests
+uv run ruff format --check src tests
+uv build
 ```
 
-To run the tool headlessly against the live network while developing:
+The test suite is hermetic and does not require network access. CI runs lint,
+format, tests, and builds on Python 3.11 through 3.14.
 
-```bash
-env HOME=/tmp/fakehome uv run cinebox search "the matrix" -t movie
-```
+<details>
+<summary><strong>Adding a provider</strong></summary>
 
-### Adding a new provider
-
-Drop a Python file into `src/cinebox/providers/` (e.g. `stardima.py`):
+Create a module under `src/cinebox/providers/`:
 
 ```python
-from __future__ import annotations
-from cinebox.providers.base import BaseProvider
 from cinebox.models import MediaType, StreamInfo
+from cinebox.providers.base import BaseProvider
 
-class StardiMaProvider(BaseProvider):
-    name = "stardima"
-    priority = 40          # lower number = runs first in the chain
 
-    def resolve(self, imdb_id: str, media_type: MediaType,
-                season: int | None = None, episode: int | None = None) -> StreamInfo:
-        # ... fetch the stream URL from stardima ...
+class ExampleProvider(BaseProvider):
+    name = "example"
+    priority = 40  # lower runs first; imdb_su is 10, vidsrc is 20
+
+    def resolve(
+        self,
+        imdb_id: str,
+        media_type: MediaType,
+        season: int | None = None,
+        episode: int | None = None,
+    ) -> StreamInfo:
         ...
 ```
 
-That's it — **no registry edits required**. `discovery.py` picks up any
-concrete `BaseProvider` subclass in the package and adds it to the chain.
-Set `priority` to control position (default `100`; `imdb_su` is `10`,
-`vidsrc` `20`, `multiembed` `30`).
+No registry edits are required. Concrete `BaseProvider` subclasses are
+discovered automatically. For sources that resolve by keyword instead of IMDb
+ID, subclass `KeywordProvider` in
+[`src/cinebox/providers/keyword.py`](https://github.com/hosam00/cinebox/blob/main/src/cinebox/providers/keyword.py).
 
-#### Keyword-search platforms (e.g. Stardima)
+</details>
 
-If your source resolves streams by raw keywords rather than IMDb IDs,
-subclass `KeywordProvider` instead:
+## Troubleshooting
 
-```python
-from cinebox.providers.keyword import KeywordProvider
-from cinebox.models import SearchResult
+- **No stream found** — providers can be temporarily unavailable. Retry, try
+  another title, and run `cinebox -v` for debug logs.
+- **VLC does not open the stream** — verify `vlc --version`. VLC 3 cannot send a
+  custom `Origin` header; use mpv if a source requires it.
+- **Downloads fail** — confirm `yt-dlp` and `ffmpeg` are installed and on your
+  `PATH`.
+- **Subtitles are missing** — keyless sources do not cover every title. For
+  OpenSubtitles, set the API key, username, and password under
+  `[opensubtitles]`.
+- **Terminal rendering is broken** — use a terminal at least 80 columns wide.
+  Piped or non-interactive sessions fall back to a numbered menu.
 
-class StardiMaProvider(KeywordProvider):
-    scheme = "stardima"
-    priority = 40
+## Contributing
 
-    def search(self, query, media_type=None):
-        # return list[SearchResult] — use self.synthetic_id("12345") for
-        # IDs the platform can't map back to IMDb
-        ...
+Contributions are welcome. See [CONTRIBUTING.md](https://github.com/hosam00/cinebox/blob/main/CONTRIBUTING.md) for setup and
+pull request expectations. For bug reports, include your OS, player version,
+`cinebox --version`, and relevant `-v` logs with credentials removed.
 
-    def resolve(self, imdb_id, media_type, season=None, episode=None):
-        # imdb_id may be synthetic: "stardima:12345"
-        ...
-```
-
-Keyword providers are merged into search results automatically alongside
-IMDb suggestions. See `src/cinebox/providers/keyword.py` for the full interface.
-
-## ✅ Roadmap
+## Roadmap
 
 - [x] PyPI release via Trusted Publishing
-- [x] Keyword-search provider interface (Stardima-ready)
-- [x] Auto-discovery for drop-in providers
-- [ ] `fzf` integration / fuzzy search over history & favorites
-- [ ] More subtitle sources (incl. forced/embedded options)
-- [ ] Provider config: per-provider enable/disable + health checks
-- [ ] A full Stardima keyword provider (PR welcome)
+- [x] Keyword-search provider interface
+- [x] Automatic provider discovery
+- [ ] fzf integration and fuzzy search over history/favorites
+- [ ] More subtitle sources, including forced subtitles
+- [ ] Per-provider enable/disable and health checks
+- [ ] A full Stardima keyword provider
 
-## ⚠️ Disclaimer
+## Disclaimer
 
-For content you have the right to consume. The tool indexes publicly
+For content you have the right to consume. `cinebox` indexes publicly
 accessible streams and hosts no media. Providers and their CDNs may change or
-break at any time — use at your own risk, and always respect copyright.
+break at any time. Use at your own risk and respect copyright.
 
-Read the full [MIT license](LICENSE).
+## License
 
----
+[MIT](https://github.com/hosam00/cinebox/blob/main/LICENSE)
 
-<p align="center">
-  <sub>Made with ❤️· Rich · yt-dlp · Python</sub>
-</p>
+<div align="center">
+  <sub>Built with Python, Rich, httpx, and yt-dlp.</sub>
+</div>

@@ -25,11 +25,6 @@ class MultiEmbedProvider(BaseProvider):
     name = "multiembed"
     priority = 30
 
-    @property
-    def _supported(self) -> bool:
-        # Placeholder for a future Playwright-based implementation.
-        return False
-
     def resolve(
         self,
         imdb_id: str,

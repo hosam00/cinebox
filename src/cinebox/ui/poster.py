@@ -20,6 +20,15 @@ from ..config import get
 from ..utils import new_http_client
 
 
+def configured_poster_scale() -> float:
+    """Return the configured poster scale, falling back safely on bad config."""
+    try:
+        scale = float(get("ui", "poster_scale", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return scale if scale > 0 else 1.0
+
+
 def _poster_pixel_dims(
     source_w: int,
     source_h: int,
@@ -76,11 +85,15 @@ def render_poster(
     poster_url: str,
     max_height: int = 40,
     max_chars: int | None = None,
+    scale: float | None = None,
 ) -> Text:
     """Download a poster and return it as a Rich Text of ANSI block art.
 
     ``max_chars`` caps the rendered character width so the poster never
     overflows its panel; height shrinks to preserve aspect.
+
+    ``scale`` is part of the cache key so changing the poster-width setting
+    refreshes the rendered image instead of serving a stale cached size.
 
     Returns a friendly fallback text on any failure so callers never crash.
     """
@@ -89,7 +102,8 @@ def render_poster(
     try:
         from PIL import Image  # noqa: PLC0415 - lazy optional deps
 
-        scale = float(get("ui", "poster_scale", 1.0))
+        if scale is None:
+            scale = configured_poster_scale()
 
         with new_http_client(timeout=8.0) as client:
             res = client.get(poster_url)
@@ -97,7 +111,11 @@ def render_poster(
         img = Image.open(BytesIO(res.content)).convert("RGB")
 
         new_width, new_height = _poster_pixel_dims(
-            img.width, img.height, max_height, scale, max_chars,
+            img.width,
+            img.height,
+            max_height,
+            scale,
+            max_chars,
         )
         if new_width < 1 or new_height < 2:
             return Text("No poster available", style="secondary")

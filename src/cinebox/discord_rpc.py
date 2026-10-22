@@ -8,8 +8,6 @@ swallowed so the presence layer never disturbs playback.
 
 from __future__ import annotations
 
-import threading
-
 from .config import get
 
 
@@ -21,7 +19,6 @@ class DiscordRPCManager:
         self._presence = None
         self._enabled = False
         self._connected = False
-        self._lock = threading.Lock()
 
     def enabled(self) -> bool:
         self._enabled = bool(get("discord", "enabled", False) and get("discord", "client_id", ""))

@@ -1,6 +1,5 @@
 """Unit tests for history and favorites persistence."""
 
-
 import pytest
 
 import cinebox as cine
@@ -21,10 +20,15 @@ def favorites(tmp_path):
 
 class TestHistory:
     def test_add_and_list(self, history):
-        history.add({
-            "imdb_id": "tt001", "title": "Alpha", "year": 2020,
-            "season": None, "episode": None,
-        })
+        history.add(
+            {
+                "imdb_id": "tt001",
+                "title": "Alpha",
+                "year": 2020,
+                "season": None,
+                "episode": None,
+            }
+        )
         entries = history.list()
         assert len(entries) == 1
         assert entries[0]["imdb_id"] == "tt001"
@@ -143,3 +147,45 @@ class TestHistoryLabels:
         stream = type("StubStream", (), {"title": "Inception"})()
         app._record_history(chosen, None, None, stream)
         assert captured["media_type"] == "movie"
+
+
+def test_default_stores_live_in_config_dir_and_migrate(monkeypatch, tmp_path):
+    from cinebox import favorites as fav_mod
+    from cinebox import history as hist_mod
+
+    config = tmp_path / "config"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "favorites.json").write_text("[]", encoding="utf-8")
+    (cache / "history.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(fav_mod, "config_dir", lambda: config)
+    monkeypatch.setattr(fav_mod, "cache_dir", lambda: cache)
+    monkeypatch.setattr(hist_mod, "config_dir", lambda: config)
+    monkeypatch.setattr(hist_mod, "cache_dir", lambda: cache)
+
+    favorites_mgr = FavoritesManager()
+    history_mgr = HistoryManager()
+    assert favorites_mgr.path == config / "favorites.json"
+    assert history_mgr.path == config / "history.json"
+    assert favorites_mgr.path.exists()
+    assert history_mgr.path.exists()
+    assert (favorites_mgr.path.stat().st_mode & 0o777) == 0o600
+    assert (history_mgr.path.stat().st_mode & 0o777) == 0o600
+
+
+def test_favorite_label_omits_missing_year():
+    assert cine._favorite_label({"title": "Alpha", "year": None}) == "Alpha"
+
+
+def test_duplicate_labels_are_disambiguated():
+    assert cine._unique_labels(["Same", "Same", "Other"]) == [
+        "Same [1]",
+        "Same [2]",
+        "Other",
+    ]
+
+
+def test_duplicate_labels_do_not_collide_with_existing_suffix():
+    labels = ["Same", "Same", "Same [1]"]
+    out = cine._unique_labels(labels)
+    assert len(set(out)) == len(labels)

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import time
 from collections.abc import Callable
 from typing import TypeVar
+from urllib.parse import urlparse
 
 import httpx
 
@@ -20,10 +20,6 @@ class CineError(Exception):
 
 
 class SearchError(CineError):
-    pass
-
-
-class NoResultsError(CineError):
     pass
 
 
@@ -97,6 +93,14 @@ def retry(
             current_delay *= backoff
 
 
+def validate_stream_url(url: str) -> str:
+    """Return *url* if it is an absolute HTTP(S) URL, else raise ValueError."""
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"Refusing non-HTTP(S) stream URL: {url[:80]!r}")
+    return url
+
+
 def which(cmd: str) -> str | None:
     """Return absolute path to a command, or None if missing."""
     return shutil.which(cmd)
@@ -109,18 +113,6 @@ def ensure_command(cmd: str, hint: str = "") -> str:
         extra = f" ({hint})" if hint else ""
         raise PlayerNotFoundError(f"Required command '{cmd}' not found{extra}. ")
     return path
-
-
-def pipe_to_command(
-    cmd: list[str], stdin: str | None = None
-) -> subprocess.CompletedProcess:
-    """Run a command, piping stdin if given, capturing stdout/stderr."""
-    return subprocess.run(
-        cmd,
-        input=stdin if stdin is not None else None,
-        capture_output=True,
-        text=True,
-    )
 
 
 def sanitize_filename(name: str, max_len: int = 80) -> str:

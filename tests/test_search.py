@@ -26,11 +26,13 @@ def test_search_result_filter_type():
         {"id": "tt0000002", "l": "A Show", "q": "tv series", "qid": "tvSeries", "y": 2002},
     ]
     movies = [
-        r for e in entries
+        r
+        for e in entries
         if (r := SearchResult.from_imdb_suggestion(e)) and r.media_type == MediaType.MOVIE
     ]
     tv = [
-        r for e in entries
+        r
+        for e in entries
         if (r := SearchResult.from_imdb_suggestion(e)) and r.media_type == MediaType.TV
     ]
     assert len(movies) == 1 and movies[0].imdb_id == "tt0000001"

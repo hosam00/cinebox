@@ -15,18 +15,18 @@ from .ui.themes import THEME_NAMES
 PLAYERS = ["mpv", "vlc"]
 QUALITIES = ["480p", "720p", "1080p", "best"]
 LANGS = ["en", "ar", "fr", "es", "de", "hi", "pt", "ru", "ja", "zh"]
-SUBS_SOURCES = ["auto", "provider", "yifysubtitles", "subsource"]
+SUBS_SOURCES = ["auto", "provider", "yifysubtitles", "subsource", "opensubtitles"]
 DIRS = ["~/Movies", "~/Movies/TV", "~/Videos", "~/Downloads"]
 
 
-POSTER_SCALES = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8]
+POSTER_SCALES = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0]
 
 
 def _ui_rows() -> list[Setting]:
     return [
         Setting("Discord RPC", "on" if get("discord", "enabled", False) else "off", "discord_rpc"),
         Setting("Theme", get("ui", "theme", "blue"), "theme"),
-        Setting("Poster width", str(get("ui", "poster_scale", 2.0)), "poster_scale"),
+        Setting("Poster width", str(get("ui", "poster_scale", 1.0)), "poster_scale"),
     ]
 
 
@@ -68,6 +68,26 @@ def _subtitle_rows() -> list[Setting]:
             "Subtitle languages",
             ", ".join(get("subtitle", "languages", ["en", "ar"])),
             "subs_langs",
+        ),
+        Setting(
+            "OpenSubtitles enabled",
+            "yes" if get("opensubtitles", "enabled", True) else "no",
+            "os_enabled",
+        ),
+        Setting(
+            "OpenSubtitles API key",
+            "set" if get("opensubtitles", "api_key", "") else "not set",
+            "os_api_key",
+        ),
+        Setting(
+            "OpenSubtitles username",
+            get("opensubtitles", "username", "") or "not set",
+            "os_username",
+        ),
+        Setting(
+            "OpenSubtitles password",
+            "set" if get("opensubtitles", "password", "") else "not set",
+            "os_password",
         ),
     ]
 
@@ -135,6 +155,38 @@ class SettingsEditor:
             if answer.strip():
                 langs = [x.strip() for x in answer.split(",") if x.strip()]
                 set_config("subtitle", "languages", langs)
+        elif edit_id == "os_enabled":
+            set_config(
+                "opensubtitles",
+                "enabled",
+                not get("opensubtitles", "enabled", True),
+            )
+        elif edit_id in ("os_api_key", "os_username", "os_password"):
+            labels = {
+                "os_api_key": "API key",
+                "os_username": "username",
+                "os_password": "password",
+            }
+            keys = {
+                "os_api_key": "api_key",
+                "os_username": "username",
+                "os_password": "password",
+            }
+            label = labels[edit_id]
+            action = self._pick(
+                [f"Replace {label}", f"Clear {label}"],
+                f"OpenSubtitles {label}",
+            )
+            if action == f"Clear {label}":
+                set_config("opensubtitles", keys[edit_id], "")
+            elif action == f"Replace {label}":
+                answer = self.ui.ask(
+                    f"OpenSubtitles {label}",
+                    default="",
+                    secret=edit_id in ("os_api_key", "os_password"),
+                )
+                if answer.strip():
+                    set_config("opensubtitles", keys[edit_id], answer.strip())
 
     def _reload_theme(self) -> None:
         from .ui.themes import reload_theme  # noqa: PLC0415
@@ -142,17 +194,19 @@ class SettingsEditor:
         reload_theme()
 
     def _edit_dir(self, section: str, key: str, choices: list[str]) -> None:
-        sel = self._pick(choices, "Choose directory")
-        if sel is not None:
+        custom = "Custom path…"
+        sel = self._pick([*choices, custom], "Choose directory")
+        if sel is None:
+            return
+        if sel != custom:
             set_config(section, key, sel)
-        else:
-            value = self.ui.ask("Path:", default=get(section, key, ""))
-            if value.strip():
-                set_config(section, key, value.strip())
+            return
+        value = self.ui.ask("Path:", default=get(section, key, ""))
+        if value.strip():
+            set_config(section, key, value.strip())
 
     def _edit_int(self, section: str, key: str, lo: int, hi: int) -> None:
-        value = self.ui.ask(f"[bold]Enter {key}[/]",
-                            default=str(get(section, key, lo)))
+        value = self.ui.ask(f"[bold]Enter {key}[/]", default=str(get(section, key, lo)))
         try:
             parsed = int(value)
         except ValueError:

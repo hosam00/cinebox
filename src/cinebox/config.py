@@ -1,17 +1,18 @@
 """Configuration management for cinebox.
 
 Config lives in ~/.config/cinebox/config.toml. A defaults-only
-config is auto-created on first import.
+config is auto-created when the CLI starts.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import tempfile
 from pathlib import Path
 
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"
-)
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"
 
 DEFAULT_HEADERS = {"User-Agent": USER_AGENT}
 
@@ -38,6 +39,15 @@ DEFAULTS: dict[str, dict] = {
         "source": "auto",
         "languages": ["en", "ar"],
     },
+    "opensubtitles": {
+        # API key from https://opensubtitles.com (free) plus the account
+        # username/password required by the /login endpoint. Treated as a
+        # last-resort subtitle source.
+        "enabled": True,
+        "api_key": "",
+        "username": "",
+        "password": "",
+    },
     "cache": {
         "enabled": True,
         "ttl_hours": 24,
@@ -61,6 +71,7 @@ _CONFIG_SECTIONS = (
     "download",
     "provider",
     "subtitle",
+    "opensubtitles",
     "cache",
     "ui",
     "discord",
@@ -74,6 +85,7 @@ def config_dir() -> Path:
     base = Path(override) if override else Path.home() / ".config"
     path = base / "cinebox"
     path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
     return path
 
 
@@ -84,6 +96,7 @@ def config_file() -> Path:
 def cache_dir() -> Path:
     path = config_dir() / "cache"
     path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
     return path
 
 
@@ -116,14 +129,10 @@ def ensure_config() -> Path:
         for section, values in DEFAULTS.items():
             lines.append(f"[{section}]")
             for key, val in values.items():
-                if isinstance(val, str):
-                    lines.append(f"{key} = {val!r}")
-                elif isinstance(val, bool):
-                    lines.append(f"{key} = {str(val).lower()}")
-                else:
-                    lines.append(f"{key} = {val!r}")
+                lines.append(f"{key} = {_toml_value(val)}")
             lines.append("")
-        path.write_text("\n".join(lines))
+        write_private(path, "\n".join(lines))
+    path.chmod(0o600)
     return path
 
 
@@ -133,15 +142,48 @@ def get(section: str, key: str, default=None):
     return config.get(section, {}).get(key, default)
 
 
+def _toml_key(key: object) -> str:
+    """Render a TOML bare key, quoting it when necessary."""
+    text = str(key)
+    if re.fullmatch(r"[A-Za-z0-9_-]+", text):
+        return text
+    return json.dumps(text, ensure_ascii=False)
+
+
 def _toml_value(value) -> str:
+    """Serialize a Python scalar/list as a TOML value."""
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, str):
+        # TOML basic strings use the same core escapes as JSON.
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, (list, tuple)):
-        items = ", ".join(repr(v) for v in value)
-        return f"[{items}]"
-    return repr(value)
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        items = ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items())
+        return "{" + items + "}"
+    raise TypeError(f"Unsupported config value: {value!r}")
+
+
+def write_private(path: Path, text: str) -> None:
+    """Atomically replace *path* with private permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def set_config(section: str, key: str, value) -> None:
@@ -177,16 +219,16 @@ def set_config(section: str, key: str, value) -> None:
         values = merged.get(s, {})
         if not values:
             continue
-        lines.append(f"[{s}]")
+        lines.append(f"[{_toml_key(s)}]")
         for k, v in values.items():
-            lines.append(f"{k} = {_toml_value(v)}")
+            lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
         lines.append("")
     for s, values in merged.items():
         if s in _CONFIG_SECTIONS:
             continue
         if isinstance(values, dict) and values:
-            lines.append(f"[{s}]")
+            lines.append(f"[{_toml_key(s)}]")
             for k, v in values.items():
-                lines.append(f"{k} = {_toml_value(v)}")
+                lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
             lines.append("")
-    path.write_text("\n".join(lines))
+    write_private(path, "\n".join(lines))

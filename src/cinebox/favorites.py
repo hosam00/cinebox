@@ -10,15 +10,27 @@ import json
 import time
 from pathlib import Path
 
-from .config import cache_dir
+from .config import cache_dir, config_dir, write_private
 from .models import MediaType, SearchResult
 
 FAVORITES_FILE = "favorites.json"
 
 
+def _default_path() -> Path:
+    path = config_dir() / FAVORITES_FILE
+    if not path.exists():
+        old = cache_dir() / FAVORITES_FILE
+        if old.exists():
+            try:
+                write_private(path, old.read_text())
+            except OSError:
+                pass
+    return path
+
+
 class FavoritesManager:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or cache_dir() / FAVORITES_FILE
+        self.path = path or _default_path()
 
     def _load(self) -> list[dict]:
         if not self.path.exists():
@@ -30,8 +42,7 @@ class FavoritesManager:
             return []
 
     def _save(self, entries: list[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(entries, indent=2))
+        write_private(self.path, json.dumps(entries, indent=2))
 
     def list(self) -> list[dict]:
         entries = self._load()
@@ -40,15 +51,18 @@ class FavoritesManager:
 
     def add(self, result: SearchResult) -> None:
         entries = [e for e in self._load() if e.get("imdb_id") != result.imdb_id]
-        entries.insert(0, {
-            "imdb_id": result.imdb_id,
-            "title": result.title,
-            "year": result.year,
-            "media_type": result.media_type.value,
-            "cast": result.cast,
-            "image_url": result.image_url,
-            "added_at": time.time(),
-        })
+        entries.insert(
+            0,
+            {
+                "imdb_id": result.imdb_id,
+                "title": result.title,
+                "year": result.year,
+                "media_type": result.media_type.value,
+                "cast": result.cast,
+                "image_url": result.image_url,
+                "added_at": time.time(),
+            },
+        )
         self._save(entries)
 
     def has(self, imdb_id: str) -> bool:

@@ -35,7 +35,8 @@ def _fetch_suggestions(query: str) -> list[dict]:
             resp = client.get(url)
             resp.raise_for_status()
             data = resp.json()
-        return data.get("d", [])
+        raw = data.get("d", []) if isinstance(data, dict) else []
+        return raw if isinstance(raw, list) else []
 
     return retry(_do)
 
@@ -49,6 +50,8 @@ def search(query: str, media_type: MediaType | None = None) -> list[SearchResult
     results: list[SearchResult] = []
     seen: set[str] = set()
     for entry in raw:
+        if not isinstance(entry, dict):
+            continue
         result = SearchResult.from_imdb_suggestion(entry)
         if result is None:
             continue
